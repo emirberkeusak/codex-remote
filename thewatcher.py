@@ -823,7 +823,7 @@ class InteractiveChartView(QtCharts.QChartView):
 class ChartWindow(QtWidgets.QMainWindow):
         """Displays live bid/ask data for a symbol using two exchanges."""
 
-        def __init__(self, symbol: str, ask_exchange: str, bid_exchange: str):
+        def __init__(self, symbol: str, ask_exchange: str, bid_exchange: str, dark_mode: bool = True):
             super().__init__()
             self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
             self.symbol = symbol
@@ -847,7 +847,6 @@ class ChartWindow(QtWidgets.QMainWindow):
 
 
             self.chart = QtCharts.QChart()
-            self.chart.setTheme(QtCharts.QChart.ChartThemeDark)
             self.chart.addSeries(self.ask_series)
             self.chart.addSeries(self.bid_series)
             self.chart.legend().setVisible(True)
@@ -869,18 +868,32 @@ class ChartWindow(QtWidgets.QMainWindow):
             self.window_ms = 60_000
 
             self.view = InteractiveChartView(self.chart)
-            self.chart.setBackgroundBrush(QtGui.QColor(30, 30, 30))
             self.setCentralWidget(self.view)
 
             # Labels to display latest prices
             self.ask_label = QtWidgets.QGraphicsSimpleTextItem(self.chart)
             self.bid_label = QtWidgets.QGraphicsSimpleTextItem(self.chart)
-            self.ask_label.setBrush(QtGui.QBrush(QtGui.QColor("white")))
-            self.bid_label.setBrush(QtGui.QBrush(QtGui.QColor("white")))
+
 
             self._start_ms = None
             self._ask_price = None
             self._bid_price = None
+
+            self.apply_theme(dark_mode)
+
+        def apply_theme(self, dark_mode: bool):
+            if dark_mode:
+                self.chart.setTheme(QtCharts.QChart.ChartThemeDark)
+                bg = QtGui.QColor(30, 30, 30)
+                fg = QtGui.QColor("white")
+            else:
+                self.chart.setTheme(QtCharts.QChart.ChartThemeLight)
+                bg = QtGui.QColor("white")
+                fg = QtGui.QColor("black")
+
+            self.chart.setBackgroundBrush(bg)
+            self.ask_label.setBrush(QtGui.QBrush(fg))
+            self.bid_label.setBrush(QtGui.QBrush(fg))
 
         def add_point(self, exchange: str, symbol: str, bid: float, ask: float):
             """Append a bid/ask point if the normalized symbol matches."""
@@ -957,6 +970,8 @@ class ChartWindow(QtWidgets.QMainWindow):
 
 # --- Main Window ---
 class MainWindow(QtWidgets.QMainWindow):
+    themeChanged = QtCore.Signal(bool)
+
     def __init__(self):
         self.min_duration = 60
         self.max_duration = 60
@@ -1122,6 +1137,9 @@ class MainWindow(QtWidgets.QMainWindow):
         app = QtWidgets.QApplication.instance()
         if app:
             app.setStyleSheet(style)
+
+        for win in list(self.chart_windows):
+            win.apply_theme(self.dark_mode)
 
     # Funding tablosu hazırlayan metod
     def _setup_funding_table(self):
@@ -1809,7 +1827,7 @@ class MainWindow(QtWidgets.QMainWindow):
             exch = AB_EXCHANGES[(col-1)//2]
             sym = self.askbid_model._symbols[row]
 
-            win = ChartWindow(sym, exch, exch)
+            win = ChartWindow(sym, exch, exch, self.dark_mode)
             self.chart_windows.append(win)
             win.destroyed.connect(lambda _=None, w=win: self.chart_windows.remove(w))
             win.show()
@@ -1826,7 +1844,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not symbol or not ask_exch or not bid_exch:
             return
 
-        win = ChartWindow(symbol, ask_exch, bid_exch)
+        win = ChartWindow(symbol, ask_exch, bid_exch, self.dark_mode)
         self.chart_windows.append(win)
         win.destroyed.connect(lambda _=None, w=win: self.chart_windows.remove(w))
         win.show()
@@ -1844,7 +1862,7 @@ class MainWindow(QtWidgets.QMainWindow):
         src_idx = proxy.mapToSource(index)
         ev = self.arb_model.events[src_idx.row()]
 
-        win = ChartWindow(ev.symbol, ev.sell_exch, ev.buy_exch)
+        win = ChartWindow(ev.symbol, ev.sell_exch, ev.buy_exch, self.dark_mode)
         self.chart_windows.append(win)
         win.destroyed.connect(lambda _=None, w=win: self.chart_windows.remove(w))
         win.show()
