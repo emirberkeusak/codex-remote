@@ -1275,15 +1275,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_arbitrage_calc = QtWidgets.QPushButton("Hesapla")
         self.duration_input = QtWidgets.QLineEdit(str(self.min_duration))
         self.duration_input.setFixedWidth(60)
-        btn_set_duration    = QtWidgets.QPushButton("Getir")
+        self.btn_set_duration = QtWidgets.QPushButton("Getir")
         self.max_duration_input = QtWidgets.QLineEdit(str(self.max_duration))
         self.max_duration_input.setFixedWidth(60)
-        btn_set_max_duration = QtWidgets.QPushButton("Getir")
+        self.btn_set_duration = QtWidgets.QPushButton("Getir")
         # Dropdown yerine switch kullanılacak
         self.duration_mode_switcher = QtWidgets.QPushButton("Min Süre")
         self.duration_mode_switcher.setCheckable(True)
         # Başlangıçta min süre kullanılacağı için checked=False
         self.duration_mode_switcher.setChecked(False)
+        self.max_duration_input.setEnabled(False)
+        self.btn_set_max_duration.setEnabled(False)
         btn_export_open     = QtWidgets.QPushButton("Açıkları Excel'e Aktar")
         btn_export_closed   = QtWidgets.QPushButton("Kapananları Excel'e Aktar")
 
@@ -1295,18 +1297,18 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(self.btn_arbitrage_calc)
         top.addWidget(QtWidgets.QLabel("Min Süre (s):"))
         top.addWidget(self.duration_input)
-        top.addWidget(btn_set_duration)
+        top.addWidget(self.btn_set_duration)
         top.addWidget(QtWidgets.QLabel("Max Süre (s):"))
         top.addWidget(self.max_duration_input)
-        top.addWidget(btn_set_max_duration)
+        top.addWidget(self.btn_set_max_duration)
         top.addWidget(self.duration_mode_switcher)
         top.addWidget(btn_export_open);  top.addWidget(btn_export_closed)
         top.addWidget(btn_clear_closed)
         top.addStretch()
         layout.addLayout(top)
 
-        btn_set_duration.clicked.connect(self.on_set_duration)
-        btn_set_max_duration.clicked.connect(self.on_set_max_duration)
+        self.btn_set_duration.clicked.connect(self.on_set_duration)
+        self.btn_set_max_duration.clicked.connect(self.on_set_max_duration)
         self.duration_mode_switcher.toggled.connect(self.on_switch_duration_mode)
         
 
@@ -1619,18 +1621,22 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
 
     def on_switch_duration_mode(self, checked: bool):
-        if checked:
+        if checked:  # Max mode
             self.duration_mode_switcher.setText("Max Süre")
-            self.export_all_arbitrage("Max Süre Excel")
             self.use_max_duration = True
-        else:
+            self.max_duration_input.setEnabled(True)
+            self.btn_set_max_duration.setEnabled(True)
+            self.duration_input.setEnabled(False)
+            self.btn_set_duration.setEnabled(False)
+        else:       # Min mode
             self.duration_mode_switcher.setText("Min Süre")
-            self.export_all_arbitrage("Min Süre Excel")
             self.use_max_duration = False
 
-        self.arb_model.beginResetModel()
-        self.arb_model.events.clear()
-        self.arb_model.endResetModel()
+            
+            self.duration_input.setEnabled(True)
+            self.btn_set_duration.setEnabled(True)
+            self.max_duration_input.setEnabled(False)
+            self.btn_set_max_duration.setEnabled(False)
 
     def on_arbitrage_calculate(self):
         # 1) Eşikleri çek
