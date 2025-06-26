@@ -1616,6 +1616,12 @@ class MainWindow(QtWidgets.QMainWindow):
         open_rows = proxy_to_rows(self.open_proxy)
         closed_rows = proxy_to_rows(self.closed_proxy)
 
+        # Tablolarda hiç veri yoksa kaydetme ve kullanıcıyı bilgilendir
+        if not open_rows and not closed_rows:
+            QtWidgets.QMessageBox.information(
+                self, "Bilgi", "Tablolar boş olduğu için Excel kaydedilmedi.")
+            return
+
         try:
             with pd.ExcelWriter(filename) as writer:
                 pd.DataFrame(open_rows, columns=headers).to_excel(
