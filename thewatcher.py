@@ -1279,8 +1279,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.max_duration_input = QtWidgets.QLineEdit(str(self.max_duration))
         self.max_duration_input.setFixedWidth(60)
         btn_set_max_duration = QtWidgets.QPushButton("Getir")
-        self.duration_mode_switcher = QtWidgets.QComboBox()
-        self.duration_mode_switcher.addItems(["Min Süre", "Max Süre"])
+        # Dropdown yerine switch kullanılacak
+        self.duration_mode_switcher = QtWidgets.QPushButton("Min Süre")
+        self.duration_mode_switcher.setCheckable(True)
+        # Başlangıçta min süre kullanılacağı için checked=False
+        self.duration_mode_switcher.setChecked(False)
         btn_export_open     = QtWidgets.QPushButton("Açıkları Excel'e Aktar")
         btn_export_closed   = QtWidgets.QPushButton("Kapananları Excel'e Aktar")
 
@@ -1304,7 +1307,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         btn_set_duration.clicked.connect(self.on_set_duration)
         btn_set_max_duration.clicked.connect(self.on_set_max_duration)
-        self.duration_mode_switcher.currentTextChanged.connect(self.on_switch_duration_mode)
+        self.duration_mode_switcher.toggled.connect(self.on_switch_duration_mode)
         
 
         # Ortak model
@@ -1615,12 +1618,13 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
 
-    def on_switch_duration_mode(self):
-        mode = self.duration_mode_switcher.currentText()
-        if mode == "Max Süre":
+    def on_switch_duration_mode(self, checked: bool):
+        if checked:
+            self.duration_mode_switcher.setText("Max Süre")
             self.export_all_arbitrage("Max Süre Excel")
             self.use_max_duration = True
         else:
+            self.duration_mode_switcher.setText("Min Süre")
             self.export_all_arbitrage("Min Süre Excel")
             self.use_max_duration = False
 
