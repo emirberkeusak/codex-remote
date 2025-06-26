@@ -1130,7 +1130,8 @@ class MainWindow(QtWidgets.QMainWindow):
         grid = fg
         style = (
             f"QWidget {{ background-color: {bg}; color: {fg}; }}\n"
-            f"QTableView {{ gridline-color: {grid}; }}"
+            f"QTableView {{ gridline-color: {grid}; }}\n"
+            f"QHeaderView::section {{ border: 1px solid {grid}; }}"
         )
 
         # 4) Küresel stylesheet'i uygula
