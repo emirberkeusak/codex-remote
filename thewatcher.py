@@ -425,6 +425,13 @@ class ArbitrajDiffModel(QtCore.QAbstractTableModel):
             self.dataChanged.emit(top, bot, [QtCore.Qt.DisplayRole])
         self.symbolsUpdated.emit(sorted({e.symbol for e in self.events}))
 
+    def clear_events(self):
+        """Reset all events and notify views."""
+        self.beginResetModel()
+        self.events.clear()
+        self.endResetModel()
+        self.symbolsUpdated.emit([])
+
     def data(self, index, role=QtCore.Qt.DisplayRole):
         # data metodu mutlaka burada tanımlı olmalı
         ev = self.events[index.row()]
@@ -1266,7 +1273,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(5,5,5,5)
         layout.setSpacing(5)
 
-# Üst bar: eşik + butonlar
+        # Üst bar: eşik + butonlar
         top = QtWidgets.QHBoxLayout()
         self.arb_threshold_input = QtWidgets.QLineEdit("0.003")
         self.arb_threshold_input.setFixedWidth(60)
@@ -1621,6 +1628,16 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
 
     def on_switch_duration_mode(self, checked: bool):
+        """Toggle between min/max duration modes and reset tables."""
+        mode_name = "Max" if checked else "Min"
+
+        # Export existing arbitrage tables before clearing
+        self.export_all_arbitrage(mode_name)
+
+        # Clear model and internal state
+        self.arb_model.clear_events()
+        self._arb_map.clear()
+
         if checked:  # Max mode
             self.duration_mode_switcher.setText("Max Süre")
             self.use_max_duration = True
@@ -1631,8 +1648,6 @@ class MainWindow(QtWidgets.QMainWindow):
         else:       # Min mode
             self.duration_mode_switcher.setText("Min Süre")
             self.use_max_duration = False
-
-
             self.duration_input.setEnabled(True)
             self.btn_set_duration.setEnabled(True)
             self.max_duration_input.setEnabled(False)
