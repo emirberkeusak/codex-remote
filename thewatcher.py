@@ -947,6 +947,8 @@ class ChartWindow(QtWidgets.QMainWindow):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         self.min_duration = 60
+        self.max_duration = 60
+        self.use_max_duration = False
         self.dark_mode = True   # Uygulama açıldığında önce dark mod aktif olsun
         super().__init__()
         self.setWindowTitle("Funding & Order Book Dashboard")
@@ -1273,6 +1275,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.duration_input = QtWidgets.QLineEdit(str(self.min_duration))
         self.duration_input.setFixedWidth(60)
         btn_set_duration    = QtWidgets.QPushButton("Getir")
+        self.max_duration_input = QtWidgets.QLineEdit(str(self.max_duration))
+        self.max_duration_input.setFixedWidth(60)
+        btn_set_max_duration = QtWidgets.QPushButton("Getir")
+        self.duration_mode_switcher = QtWidgets.QComboBox()
+        self.duration_mode_switcher.addItems(["Min Süre", "Max Süre"])
         btn_export_open     = QtWidgets.QPushButton("Açıkları Excel'e Aktar")
         btn_export_closed   = QtWidgets.QPushButton("Kapananları Excel'e Aktar")
 
@@ -1285,12 +1292,18 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(QtWidgets.QLabel("Min Süre (s):"))
         top.addWidget(self.duration_input)
         top.addWidget(btn_set_duration)
+        top.addWidget(QtWidgets.QLabel("Max Süre (s):"))
+        top.addWidget(self.max_duration_input)
+        top.addWidget(btn_set_max_duration)
+        top.addWidget(self.duration_mode_switcher)
         top.addWidget(btn_export_open);  top.addWidget(btn_export_closed)
         top.addWidget(btn_clear_closed)
         top.addStretch()
         layout.addLayout(top)
 
         btn_set_duration.clicked.connect(self.on_set_duration)
+        btn_set_max_duration.clicked.connect(self.on_set_max_duration)
+        self.duration_mode_switcher.currentTextChanged.connect(self.on_switch_duration_mode)
         
 
         # Ortak model
@@ -1540,6 +1553,15 @@ class MainWindow(QtWidgets.QMainWindow):
         except ValueError:
             self.min_duration = 60
 
+    @QtCore.Slot()
+    def on_set_max_duration(self):
+        """UI’dan girilen saniyeyi alıp self.max_duration’a ata."""
+        try:
+            self.max_duration = int(self.max_duration_input.text())
+        except ValueError:
+            self.max_duration = 60
+            self.max_duration_input.setText(str(self.max_duration))
+
     def on_clear_closed(self):
         
         #Kapanan Arbitrajlar tablosunu önce Excel'e kaydeder,
@@ -1556,7 +1578,54 @@ class MainWindow(QtWidgets.QMainWindow):
             if ev.end_dt is not None:
                 em.remove_event(row)
 
+    def export_all_arbitrage(self, mode_name: str):
+        """Tüm açık ve kapalı arbitrajları tek dosyaya Excel olarak kaydet."""
+        timestamp = datetime.now().strftime("%d%m%Y%H%M%S")
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        filename = os.path.join(desktop, f"{mode_name} {timestamp}.xlsx")
 
+        headers = [
+            self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
+            for c in range(self.arb_model.columnCount())
+        ]
+
+        def proxy_to_rows(proxy):
+            rows = []
+            for r in range(proxy.rowCount()):
+                rec = {}
+                for c in range(proxy.columnCount()):
+                    idx = proxy.index(r, c)
+                    rec[headers[c]] = proxy.data(idx, QtCore.Qt.DisplayRole)
+                rows.append(rec)
+            return rows
+
+        open_rows = proxy_to_rows(self.open_proxy)
+        closed_rows = proxy_to_rows(self.closed_proxy)
+
+        try:
+            with pd.ExcelWriter(filename) as writer:
+                pd.DataFrame(open_rows, columns=headers).to_excel(
+                    writer, sheet_name="Açık Arbitrajlar Tablosu", index=False
+                )
+                pd.DataFrame(closed_rows, columns=headers).to_excel(
+                    writer, sheet_name="Kapalı Arbitrajlar Tablosu", index=False
+                )
+            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{filename}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
+
+    def on_switch_duration_mode(self):
+        mode = self.duration_mode_switcher.currentText()
+        if mode == "Max Süre":
+            self.export_all_arbitrage("Max Süre Excel")
+            self.use_max_duration = True
+        else:
+            self.export_all_arbitrage("Min Süre Excel")
+            self.use_max_duration = False
+
+        self.arb_model.beginResetModel()
+        self.arb_model.events.clear()
+        self.arb_model.endResetModel()
 
     def on_arbitrage_calculate(self):
         # 1) Eşikleri çek
@@ -1699,12 +1768,16 @@ class MainWindow(QtWidgets.QMainWindow):
                             # Süre kontrolü
                             elapsed = (datetime.now() - ev.start_dt).total_seconds()
                             row = self.arb_model.events.index(ev)
-                            if elapsed < self.min_duration:
-                                # 1 dak altında: komple sil
-                                self.arb_model.remove_event(row)
+                            if not self.use_max_duration:
+                                if elapsed < self.min_duration:
+                                    self.arb_model.remove_event(row)
+                                else:
+                                    self.arb_model.end_event(row)
                             else:
-                                # 1 dak üstü: end_event → mavi/beyaz
-                                self.arb_model.end_event(row)
+                                if elapsed > self.max_duration:
+                                    self.arb_model.remove_event(row)
+                                else:
+                                    self.arb_model.end_event(row)
 
 
 
