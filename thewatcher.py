@@ -1570,9 +1570,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_export_askbid_excel(self):
         """Ask/Bid tablosunu Excel'e aktar."""
         ts = datetime.now().strftime("%d%m%Y%H%M%S")
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        name = os.path.join(desktop, f"AskBid {ts}.xlsx")
-        self._export_askbid(name)
+        default_name = f"AskBid {ts}.xlsx"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Tabloyu Kaydet",
+            default_name,
+            "Excel Dosyaları (*.xlsx)",
+        )
+        if not path:
+            return
+        self._export_askbid(path)
 
     def _export_askbid(self, filename: str):
         headers = [
@@ -1671,8 +1678,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def export_all_arbitrage(self, mode_name: str):
         """Tüm açık ve kapalı arbitrajları tek dosyaya Excel olarak kaydet."""
         timestamp = datetime.now().strftime("%d%m%Y%H%M%S")
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        filename = os.path.join(desktop, f"{mode_name} {timestamp}.xlsx")
+        default_name = f"{mode_name} {timestamp}.xlsx"
 
         headers = [
             self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
@@ -1697,16 +1703,25 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(
                 self, "Bilgi", "Tablolar boş olduğu için Excel kaydedilmedi.")
             return
+        
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Tabloyu Kaydet",
+            default_name,
+            "Excel Dosyaları (*.xlsx)",
+        )
+        if not path:
+            return
 
         try:
-            with pd.ExcelWriter(filename) as writer:
+            with pd.ExcelWriter(path) as writer:
                 pd.DataFrame(open_rows, columns=headers).to_excel(
                     writer, sheet_name="Açık Arbitrajlar Tablosu", index=False
                 )
                 pd.DataFrame(closed_rows, columns=headers).to_excel(
                     writer, sheet_name="Kapalı Arbitrajlar Tablosu", index=False
                 )
-            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{filename}")
+            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
 
