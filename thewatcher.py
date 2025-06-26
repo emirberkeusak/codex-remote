@@ -822,6 +822,7 @@ class ChartWindow(QtWidgets.QMainWindow):
 
         def __init__(self, symbol: str, ask_exchange: str, bid_exchange: str):
             super().__init__()
+            self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
             self.symbol = symbol
             self.ask_exchange = ask_exchange
             self.bid_exchange = bid_exchange
