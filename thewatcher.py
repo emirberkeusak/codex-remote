@@ -1071,6 +1071,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._arb_timer.timeout.connect(self.process_arbitrage)
         self._arb_timer.start(500)
 
+        # Başlangıç teması
+        self.toggle_theme(self.btn_toggle_theme.isChecked())
+
 
     # Status güncelleyiciler
     def _update_status_ab(self, exchange: str, connected: bool):
@@ -1103,18 +1106,22 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.btn_toggle_theme.setText("Dark Mode")
 
+        
+
         # 3) Uygulanacak stylesheet’i hazırla
+
+        bg = "#2b2b2b" if self.dark_mode else "white"
+        fg = "white" if self.dark_mode else "black"
+        grid = fg
         style = (
-            "QTableView { background-color: #2b2b2b; color: white; gridline-color: white; }"
-            if self.dark_mode
-            else
-            "QTableView { background-color: white; color: black; gridline-color: black; }"
+            f"QWidget {{ background-color: {bg}; color: {fg}; }}\n"
+            f"QTableView {{ gridline-color: {grid}; }}"
         )
 
-        # 4) Tüm tabloları aynı anda güncelle
-        for tbl in (self.table, self.askbid_table, self.open_table, self.closed_table):
-            tbl.setShowGrid(True)
-            tbl.setStyleSheet(style)
+        # 4) Küresel stylesheet'i uygula
+        app = QtWidgets.QApplication.instance()
+        if app:
+            app.setStyleSheet(style)
 
     # Funding tablosu hazırlayan metod
     def _setup_funding_table(self):
@@ -1125,7 +1132,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.table = QtWidgets.QTableView()
         self.table.setShowGrid(True)
-        self.table.setStyleSheet("QTableView { background-color: #2b2b2b; color: white; gridline-color: white; }")
         self.table.setModel(self.funding_proxy)
 
         header = FilterableHeaderView(QtCore.Qt.Horizontal, self.table)
@@ -1168,7 +1174,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.askbid_table = QtWidgets.QTableView()
         self.askbid_table.setShowGrid(True)
-        self.askbid_table.setStyleSheet("QTableView { background-color: #2b2b2b; color: white; gridline-color: white; }")
         self.askbid_table.setModel(self.askbid_proxy)
 
         # Sıralamayı aktif et
@@ -1345,7 +1350,6 @@ class MainWindow(QtWidgets.QMainWindow):
         v_open   = QtWidgets.QVBoxLayout(open_box)
         self.open_table = QtWidgets.QTableView()
         self.open_table.setShowGrid(True)
-        self.open_table.setStyleSheet("QTableView { background-color: #2b2b2b; color: white; gridline-color: white; }")
         
 
         header_o = FilterableHeaderView(QtCore.Qt.Horizontal, self.open_table)
@@ -1379,7 +1383,6 @@ class MainWindow(QtWidgets.QMainWindow):
         v_closed   = QtWidgets.QVBoxLayout(closed_box)
         self.closed_table = QtWidgets.QTableView()
         self.closed_table.setShowGrid(True)
-        self.closed_table.setStyleSheet("QTableView { background-color: #2b2b2b; color: white; gridline-color: white; }")
 
         header_c = FilterableHeaderView(QtCore.Qt.Horizontal, self.closed_table)
         self.closed_dropdown = MultiSelectDropdown()
