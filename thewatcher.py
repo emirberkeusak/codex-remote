@@ -1159,14 +1159,14 @@ class MainWindow(QtWidgets.QMainWindow):
         from PySide6.QtCore    import Qt
 
         self.askbid_model = AskBidTableModel()
-        askbid_proxy = SymbolFilterProxyModel()
-        askbid_proxy.setSourceModel(self.askbid_model)
-        askbid_proxy.setDynamicSortFilter(True)
+        self.askbid_proxy = SymbolFilterProxyModel()
+        self.askbid_proxy.setSourceModel(self.askbid_model)
+        self.askbid_proxy.setDynamicSortFilter(True)
 
         self.askbid_table = QtWidgets.QTableView()
         self.askbid_table.setShowGrid(True)
         self.askbid_table.setStyleSheet("QTableView { background-color: #2b2b2b; color: white; gridline-color: white; }")
-        self.askbid_table.setModel(askbid_proxy)
+        self.askbid_table.setModel(self.askbid_proxy)
 
         # Sıralamayı aktif et
         self.askbid_table.setSortingEnabled(True)
@@ -1199,7 +1199,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.askbid_delegate = delegate
 
         self.askbid_model.symbolsUpdated.connect(self._update_askbid_dropdown)
-        self.askbid_dropdown.selectionChanged.connect(askbid_proxy.set_symbol_filter)
+        self.askbid_dropdown.selectionChanged.connect(self.askbid_proxy.set_symbol_filter)
 
         # Double-click to open chart
         self.askbid_table.doubleClicked.connect(self._on_generate_chart)
@@ -1246,6 +1246,14 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(0,0,0,0)
 
         self._setup_askbid_table()
+
+        top = QtWidgets.QHBoxLayout()
+        self.btn_export_askbid = QtWidgets.QPushButton("Excel'e Aktar")
+        top.addStretch()
+        top.addWidget(self.btn_export_askbid)
+        layout.addLayout(top)
+
+        self.btn_export_askbid.clicked.connect(self.on_export_askbid_excel)
 
         anim_checkbox = QtWidgets.QCheckBox("Hücre Animasyonlarını Aç")
         anim_checkbox.setChecked(True)
@@ -1529,6 +1537,37 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
 
+    def on_export_askbid_excel(self):
+        """Ask/Bid tablosunu Excel'e aktar."""
+        ts = datetime.now().strftime("%d%m%Y%H%M%S")
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        name = os.path.join(desktop, f"AskBid {ts}.xlsx")
+        self._export_askbid(name)
+
+    def _export_askbid(self, filename: str):
+        headers = [
+            self.askbid_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
+            for c in range(self.askbid_model.columnCount())
+        ]
+
+        rows = []
+        for r in range(self.askbid_proxy.rowCount()):
+            rec = {}
+            for c in range(self.askbid_proxy.columnCount()):
+                idx = self.askbid_proxy.index(r, c)
+                rec[headers[c]] = self.askbid_proxy.data(idx, QtCore.Qt.DisplayRole)
+            rows.append(rec)
+
+        if not rows:
+            QtWidgets.QMessageBox.information(self, "Bilgi", "Tablo boş olduğu için Excel kaydedilmedi.")
+            return
+
+        try:
+            pd.DataFrame(rows, columns=headers).to_excel(filename, index=False)
+            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{filename}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
+
     def on_export_funding_excel(self):
         """Funding-rate tablosunu Excel'e aktar."""
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1778,7 +1817,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     row = self.arb_model.events.index(ev)
                     self.arb_model.remove_event(row)
                     self._arb_map.pop(key, None)
-                    
+
 
         for symbol, exch_data in data.items():
             for buy_exch, (_, ask_price) in exch_data.items():
