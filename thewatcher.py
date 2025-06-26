@@ -1150,6 +1150,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.funding_proxy.set_symbol_filter
         )
 
+        shortcut = QtGui.QShortcut(QtGui.QKeySequence.Copy, self.table)
+        shortcut.activated.connect(lambda t=self.table: self._copy_selection(t))
+
     def _update_dropdown_items(self, symbols: list[str]):
         self.symbol_dropdown.set_items(symbols)
 
@@ -1203,6 +1206,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Double-click to open chart
         self.askbid_table.doubleClicked.connect(self._on_generate_chart)
+
+        shortcut = QtGui.QShortcut(QtGui.QKeySequence.Copy, self.askbid_table)
+        shortcut.activated.connect(lambda t=self.askbid_table: self._copy_selection(t))
 
     def _update_askbid_dropdown(self, symbols: list[str]):
         self.askbid_dropdown.set_items(symbols)
@@ -1362,6 +1368,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Hide Chart column in open arbitrage table
         self.open_table.setColumnHidden(self.arb_model.columnCount() - 1, True)
 
+        shortcut = QtGui.QShortcut(QtGui.QKeySequence.Copy, self.open_table)
+        shortcut.activated.connect(lambda t=self.open_table: self._copy_selection(t))
+
         v_open.addWidget(self.open_table)
         layout.addWidget(open_box)
 
@@ -1390,6 +1399,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.closed_table.sortByColumn(5, QtCore.Qt.DescendingOrder)
         # Allow opening chart via double click on Chart column
         self.closed_table.doubleClicked.connect(self._on_closed_chart)
+
+        shortcut = QtGui.QShortcut(QtGui.QKeySequence.Copy, self.closed_table)
+        shortcut.activated.connect(lambda t=self.closed_table: self._copy_selection(t))
 
         v_closed.addWidget(self.closed_table)
         layout.addWidget(closed_box)
@@ -1486,6 +1498,24 @@ class MainWindow(QtWidgets.QMainWindow):
         # (İsteğe bağlı) Modeli tamamen resetleyip yeniden çiz
         # self.arb_model.beginResetModel()
         # self.arb_model.endResetModel()
+
+    
+    def _copy_selection(self, table):
+        """Copy selected cells of the given table to the clipboard."""
+        indexes = table.selectionModel().selectedIndexes()
+        if not indexes:
+            return
+        indexes = sorted(indexes, key=lambda i: (i.row(), i.column()))
+        rows = {}
+        for idx in indexes:
+            rows.setdefault(idx.row(), []).append(idx)
+        lines = []
+        model = table.model()
+        for r in sorted(rows):
+            vals = [str(model.data(i, QtCore.Qt.DisplayRole) or "")
+                    for i in sorted(rows[r], key=lambda i: i.column())]
+            lines.append("\t".join(vals))
+        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
 
 
     def on_export_open_excel(self):
