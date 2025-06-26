@@ -1125,13 +1125,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 3) Uygulanacak stylesheet’i hazırla
 
-        bg = "#2b2b2b" if self.dark_mode else "white"
+        bg = "#1e1e1e" if self.dark_mode else "white"
         fg = "white" if self.dark_mode else "black"
-        grid = fg
+        grid = "#888" if self.dark_mode else "black"
         style = (
             f"QWidget {{ background-color: {bg}; color: {fg}; }}\n"
             f"QTableView {{ gridline-color: {grid}; }}\n"
-            f"QHeaderView::section {{ border: 1px solid {grid}; }}"
+            f"QHeaderView::section {{ border: 1px solid {grid}; background-color: {bg}; color: {fg}; }}"
         )
 
         # 4) Küresel stylesheet'i uygula
