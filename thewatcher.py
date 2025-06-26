@@ -1130,7 +1130,7 @@ class MainWindow(QtWidgets.QMainWindow):
         grid = "#888" if self.dark_mode else "black"
         style = (
             f"QWidget {{ background-color: {bg}; color: {fg}; }}\n"
-            f"QTableView {{ gridline-color: {grid}; }}\n"
+            f"QTableView {{ gridline-color: {grid}; border: 1px solid {grid}; }}\n"
             f"QHeaderView::section {{ border: 1px solid {grid}; background-color: {bg}; color: {fg}; }}"
         )
 
