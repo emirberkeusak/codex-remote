@@ -1275,7 +1275,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_arbitrage_calc = QtWidgets.QPushButton("Hesapla")
         self.duration_input = QtWidgets.QLineEdit(str(self.min_duration))
         self.duration_input.setFixedWidth(60)
-        self.btn_set_duration = QtWidgets.QPushButton("Getir")
+        self.btn_set_max_duration = QtWidgets.QPushButton("Getir")
         self.max_duration_input = QtWidgets.QLineEdit(str(self.max_duration))
         self.max_duration_input.setFixedWidth(60)
         self.btn_set_duration = QtWidgets.QPushButton("Getir")
@@ -1632,7 +1632,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.duration_mode_switcher.setText("Min Süre")
             self.use_max_duration = False
 
-            
+
             self.duration_input.setEnabled(True)
             self.btn_set_duration.setEnabled(True)
             self.max_duration_input.setEnabled(False)
