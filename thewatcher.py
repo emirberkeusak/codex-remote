@@ -373,8 +373,8 @@ class ArbitrajDiffModel(QtCore.QAbstractTableModel):
         return len(self.events)
 
     def columnCount(self, parent=None):
-        # eskiden 14: şimdi 15 sütun
-        return 15
+        # eskiden 15 sütun, Chart kolonu ile 16 oldu
+        return 16
 
     def headerData(self, section, orientation, role):
         if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
@@ -383,7 +383,7 @@ class ArbitrajDiffModel(QtCore.QAbstractTableModel):
                 "Başlangıç Zamanı", "Bitiş Zamanı", "Süre", "Son Oran",
                 "İlk Ask", "İlk Bid", "Son Ask", "Son Bid",
                 "Alım FR", "Satım FR",
-                "Tekrar Sayısı"
+                "Tekrar Sayısı", "Chart"
             ][section]
         return None
 
@@ -446,6 +446,9 @@ class ArbitrajDiffModel(QtCore.QAbstractTableModel):
                     cnt = sum(1 for e in self.events
                               if e.end_dt is not None and e.symbol == ev.symbol)
                 return str(cnt)
+            
+            if col == 15:
+                return "Open Chart"
             
             # önceki sütun verileri:
             return {
@@ -1348,6 +1351,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.open_table.setModel(self.open_proxy)
         self.open_table.setSortingEnabled(True)
         self.open_table.sortByColumn(3, QtCore.Qt.DescendingOrder)
+        # Hide Chart column in open arbitrage table
+        self.open_table.setColumnHidden(self.arb_model.columnCount() - 1, True)
 
         v_open.addWidget(self.open_table)
         layout.addWidget(open_box)
@@ -1375,6 +1380,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.closed_table.setModel(self.closed_proxy)
         self.closed_table.setSortingEnabled(True)
         self.closed_table.sortByColumn(5, QtCore.Qt.DescendingOrder)
+        # Allow opening chart via double click on Chart column
+        self.closed_table.doubleClicked.connect(self._on_closed_chart)
 
         v_closed.addWidget(self.closed_table)
         layout.addWidget(closed_box)
@@ -1502,14 +1509,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # 2) Başlıkları al
         headers = [
             self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
-            for c in range(self.arb_model.columnCount())
+            for c in range(self.arb_model.columnCount() - 1)
         ]
 
         # 3) Proxy üzerinden satırları oku
         rows = []
         for r in range(proxy.rowCount()):
             rec = {}
-            for c in range(proxy.columnCount()):
+            for c in range(proxy.columnCount() - 1):
                 idx = proxy.index(r, c)
                 rec[headers[c]] = proxy.data(idx, QtCore.Qt.DisplayRole)
             rows.append(rec)
@@ -1733,6 +1740,24 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         win = ChartWindow(symbol, ask_exch, bid_exch)
+        self.chart_windows.append(win)
+        win.destroyed.connect(lambda _=None, w=win: self.chart_windows.remove(w))
+        win.show()
+
+
+    @QtCore.Slot(QtCore.QModelIndex)
+    def _on_closed_chart(self, index: QtCore.QModelIndex):
+        """Open chart from the closed arbitrage table when clicking Chart column."""
+        if not index.isValid():
+            return
+        if index.column() != self.arb_model.columnCount() - 1:
+            return
+
+        proxy = self.closed_table.model()
+        src_idx = proxy.mapToSource(index)
+        ev = self.arb_model.events[src_idx.row()]
+
+        win = ChartWindow(ev.symbol, ev.sell_exch, ev.buy_exch)
         self.chart_windows.append(win)
         win.destroyed.connect(lambda _=None, w=win: self.chart_windows.remove(w))
         win.show()
