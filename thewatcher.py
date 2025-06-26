@@ -17,6 +17,7 @@ from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QV
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 import qasync
 import random
+import matplotlib
 
 
 def resource_path(relative_path):
