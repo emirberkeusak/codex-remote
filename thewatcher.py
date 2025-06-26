@@ -1769,6 +1769,17 @@ class MainWindow(QtWidgets.QMainWindow):
         fee_rate_sell = 0.0005
         data = self.askbid_model._data
 
+        # Remove stale opportunities that exceeded max duration
+        if self.use_max_duration:
+            now = datetime.now()
+            for key, ev in list(self._arb_map.items()):
+                elapsed = (now - ev.start_dt).total_seconds()
+                if elapsed > self.max_duration:
+                    row = self.arb_model.events.index(ev)
+                    self.arb_model.remove_event(row)
+                    self._arb_map.pop(key, None)
+                    
+
         for symbol, exch_data in data.items():
             for buy_exch, (_, ask_price) in exch_data.items():
                 if ask_price <= 0:
