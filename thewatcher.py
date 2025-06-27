@@ -1152,6 +1152,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.table = QtWidgets.QTableView()
         self.table.setShowGrid(True)
         self.table.setModel(self.funding_proxy)
+        self.table.verticalHeader().setVisible(False)
 
         header = FilterableHeaderView(QtCore.Qt.Horizontal, self.table)
         header.setSectionsClickable(True)
@@ -1194,6 +1195,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.askbid_table = QtWidgets.QTableView()
         self.askbid_table.setShowGrid(True)
         self.askbid_table.setModel(self.askbid_proxy)
+        self.askbid_table.verticalHeader().setVisible(False)
 
         # Sıralamayı aktif et
         self.askbid_table.setSortingEnabled(True)
@@ -1369,6 +1371,7 @@ class MainWindow(QtWidgets.QMainWindow):
         v_open   = QtWidgets.QVBoxLayout(open_box)
         self.open_table = QtWidgets.QTableView()
         self.open_table.setShowGrid(True)
+        self.open_table.verticalHeader().setVisible(False)
         
 
         header_o = FilterableHeaderView(QtCore.Qt.Horizontal, self.open_table)
@@ -1402,6 +1405,7 @@ class MainWindow(QtWidgets.QMainWindow):
         v_closed   = QtWidgets.QVBoxLayout(closed_box)
         self.closed_table = QtWidgets.QTableView()
         self.closed_table.setShowGrid(True)
+        self.closed_table.verticalHeader().setVisible(False)
 
         header_c = FilterableHeaderView(QtCore.Qt.Horizontal, self.closed_table)
         self.closed_dropdown = MultiSelectDropdown()
