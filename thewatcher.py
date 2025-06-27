@@ -1532,15 +1532,34 @@ class MainWindow(QtWidgets.QMainWindow):
         if not indexes:
             return
         indexes = sorted(indexes, key=lambda i: (i.row(), i.column()))
+        # Collect unique columns in the order they appear in the selection
+        columns = []
+        seen_cols = set()
+        for idx in indexes:
+            c = idx.column()
+            if c not in seen_cols:
+                seen_cols.add(c)
+                columns.append(c)
         rows = {}
         for idx in indexes:
             rows.setdefault(idx.row(), []).append(idx)
-        lines = []
+        
+
         model = table.model()
+        # Header line
+        headers = [
+            str(model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole) or "")
+            for c in columns
+        ]
+        lines = ["\t".join(headers)]
+        
         for r in sorted(rows):
-            vals = [str(model.data(i, QtCore.Qt.DisplayRole) or "")
-                    for i in sorted(rows[r], key=lambda i: i.column())]
+            vals = [
+                str(model.data(i, QtCore.Qt.DisplayRole) or "")
+                for i in sorted(rows[r], key=lambda i: i.column())
+            ]
             lines.append("\t".join(vals))
+
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
 
 
