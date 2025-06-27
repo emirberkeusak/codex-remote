@@ -850,7 +850,7 @@ class ChartWindow(QtWidgets.QMainWindow):
             self.chart.addSeries(self.ask_series)
             self.chart.addSeries(self.bid_series)
             self.chart.legend().setVisible(True)
-            self.chart.setTitle("Ask Price: - | Bid Price: -")
+            self.chart.setTitle("Ask Price: - | Bid Price: - | Spread: -")
 
             self.axis_x = QtCharts.QDateTimeAxis()
             self.axis_x.setFormat("HH:mm:ss")
@@ -960,13 +960,27 @@ class ChartWindow(QtWidgets.QMainWindow):
 
             title_ask = f"{self._ask_price}" if self._ask_price is not None else "-"
             title_bid = f"{self._bid_price}" if self._bid_price is not None else "-"
-            self.chart.setTitle(f"Ask Price: {title_ask} | Bid Price: {title_bid}")
+            if self._ask_price is not None and self._bid_price not in (None, 0):
+                spread = self._ask_price / self._bid_price - 1
+                spread_str = f"{spread:.5f}"
+            else:
+                spread_str = "-"
+            self.chart.setTitle(
+                f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str}"
+            )
 
             self.chart.update()
 
             title_ask = f"{self._ask_price}" if self._ask_price is not None else "-"
             title_bid = f"{self._bid_price}" if self._bid_price is not None else "-"
-            self.chart.setTitle(f"Ask Price: {title_ask} | Bid Price: {title_bid}")
+            if self._ask_price is not None and self._bid_price not in (None, 0):
+                spread = self._ask_price / self._bid_price - 1
+                spread_str = f"{spread:.5f}"
+            else:
+                spread_str = "-"
+            self.chart.setTitle(
+                f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str}"
+            )
 
 # --- Main Window ---
 class MainWindow(QtWidgets.QMainWindow):
@@ -1552,7 +1566,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for c in columns
         ]
         lines = ["\t".join(headers)]
-        
+
         for r in sorted(rows):
             vals = [
                 str(model.data(i, QtCore.Qt.DisplayRole) or "")
