@@ -47,6 +47,9 @@ BYBIT_BATCH_SIZE     = 50
 BYBIT_OPEN_TIMEOUT   = 30
 BYBIT_CLOSE_TIMEOUT  = 10
 
+FEE_RATE_BUY  = 0.0005  # Commission rate when buying
+FEE_RATE_SELL = 0.0005  # Commission rate when selling
+
 
 # --- Helper: normalize for subscription endpoints ---
 def normalize_pair(pair: str) -> str:
@@ -980,10 +983,13 @@ class ChartWindow(QtWidgets.QMainWindow):
             if self._ask_price is not None and self._bid_price not in (None, 0):
                 spread = self._ask_price / self._bid_price - 1
                 spread_str = f"{spread:.5f}"
+                arb = self._bid_price / self._ask_price - 1 - (FEE_RATE_BUY + FEE_RATE_SELL)
+                arb_str = f"{arb:.5f}"
             else:
                 spread_str = "-"
+                arb_str = "-"
             self.chart.setTitle(
-                f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str}"
+                f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str} | Arbitrage: {arb_str}"
             )
 
             self.chart.update()
@@ -993,10 +999,13 @@ class ChartWindow(QtWidgets.QMainWindow):
             if self._ask_price is not None and self._bid_price not in (None, 0):
                 spread = self._ask_price / self._bid_price - 1
                 spread_str = f"{spread:.5f}"
+                arb = self._bid_price / self._ask_price - 1 - (FEE_RATE_BUY + FEE_RATE_SELL)
+                arb_str = f"{arb:.5f}"
             else:
                 spread_str = "-"
+                arb_str = "-"
             self.chart.setTitle(
-                f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str}"
+                f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str} | Arbitrage: {arb_str}"
             )
 
 # --- Main Window ---
