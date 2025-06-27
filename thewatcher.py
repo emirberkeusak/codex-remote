@@ -906,7 +906,8 @@ class ChartWindow(QtWidgets.QMainWindow):
             if self._start_ms is None:
                 self._start_ms = x
 
-            updated = False
+            ask_updated = False
+            bid_updated = False
 
             if exchange == self.ask_exchange:
                 self.ask_series.append(x, ask)
@@ -914,7 +915,7 @@ class ChartWindow(QtWidgets.QMainWindow):
                 p = self.chart.mapToPosition(QtCore.QPointF(x, ask), self.ask_series)
                 self.ask_label.setPos(p)
                 self._ask_price = ask
-                updated = True
+                ask_updated = True
 
             if exchange == self.bid_exchange:
                 self.bid_series.append(x, bid)
@@ -922,9 +923,25 @@ class ChartWindow(QtWidgets.QMainWindow):
                 p = self.chart.mapToPosition(QtCore.QPointF(x, bid), self.bid_series)
                 self.bid_label.setPos(p)
                 self._bid_price = bid
-                updated = True
+                bid_updated = True
 
-            if not updated:
+            # If only one series received an update, extend the other series
+            # using its last known price so both lines move in sync.
+            if ask_updated and not bid_updated and self._bid_price is not None:
+                self.bid_series.append(x, self._bid_price)
+                p = self.chart.mapToPosition(
+                    QtCore.QPointF(x, self._bid_price), self.bid_series
+                )
+                self.bid_label.setPos(p)
+
+            if bid_updated and not ask_updated and self._ask_price is not None:
+                self.ask_series.append(x, self._ask_price)
+                p = self.chart.mapToPosition(
+                    QtCore.QPointF(x, self._ask_price), self.ask_series
+                )
+                self.ask_label.setPos(p)
+
+            if not (ask_updated or bid_updated):
                 return
             
             if not self.axis_x.min().isValid():
