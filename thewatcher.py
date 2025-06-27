@@ -1016,6 +1016,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.min_duration = 60
         self.max_duration = 60
         self.use_max_duration = False
+        self.ask_fee_rate = 0.0005
+        self.bid_fee_rate = 0.0005
         self.dark_mode = True   # Uygulama açıldığında önce dark mod aktif olsun
         super().__init__()
         self.setWindowTitle("Funding & Order Book Dashboard")
@@ -1370,6 +1372,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.max_duration_input = QtWidgets.QLineEdit(str(self.max_duration))
         self.max_duration_input.setFixedWidth(60)
         self.btn_set_duration = QtWidgets.QPushButton("Getir")
+        self.ask_fee_input = QtWidgets.QLineEdit(str(self.ask_fee_rate))
+        self.ask_fee_input.setFixedWidth(60)
+        self.btn_set_ask_fee = QtWidgets.QPushButton("Uygula")
+        self.bid_fee_input = QtWidgets.QLineEdit(str(self.bid_fee_rate))
+        self.bid_fee_input.setFixedWidth(60)
+        self.btn_set_bid_fee = QtWidgets.QPushButton("Uygula")
         # Dropdown yerine switch kullanılacak
         self.duration_mode_switcher = QtWidgets.QPushButton("Min Süre")
         self.duration_mode_switcher.setCheckable(True)
@@ -1392,6 +1400,8 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(QtWidgets.QLabel("Max Süre (s):"))
         top.addWidget(self.max_duration_input)
         top.addWidget(self.btn_set_max_duration)
+        top.addWidget(QtWidgets.QLabel("Ask Fee:")); top.addWidget(self.ask_fee_input); top.addWidget(self.btn_set_ask_fee)
+        top.addWidget(QtWidgets.QLabel("Bid Fee:")); top.addWidget(self.bid_fee_input); top.addWidget(self.btn_set_bid_fee)
         top.addWidget(self.duration_mode_switcher)
         top.addWidget(btn_export_open);  top.addWidget(btn_export_closed)
         top.addWidget(btn_clear_closed)
@@ -1400,6 +1410,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.btn_set_duration.clicked.connect(self.on_set_duration)
         self.btn_set_max_duration.clicked.connect(self.on_set_max_duration)
+        self.btn_set_ask_fee.clicked.connect(self.on_set_ask_fee)
+        self.btn_set_bid_fee.clicked.connect(self.on_set_bid_fee)
         self.duration_mode_switcher.toggled.connect(self.on_switch_duration_mode)
         
 
@@ -1744,6 +1756,26 @@ class MainWindow(QtWidgets.QMainWindow):
             self.max_duration = 60
             self.max_duration_input.setText(str(self.max_duration))
 
+    @QtCore.Slot()
+    def on_set_ask_fee(self):
+        """Update ask side fee rate from UI."""
+        try:
+            self.ask_fee_rate = float(self.ask_fee_input.text())
+        except ValueError:
+            self.ask_fee_rate = 0.0
+            self.ask_fee_input.setText(str(self.ask_fee_rate))
+        globals()['FEE_RATE_BUY'] = self.ask_fee_rate
+
+    @QtCore.Slot()
+    def on_set_bid_fee(self):
+        """Update bid side fee rate from UI."""
+        try:
+            self.bid_fee_rate = float(self.bid_fee_input.text())
+        except ValueError:
+            self.bid_fee_rate = 0.0
+            self.bid_fee_input.setText(str(self.bid_fee_rate))
+        globals()['FEE_RATE_SELL'] = self.bid_fee_rate
+
     def on_clear_closed(self):
         
         #Kapanan Arbitrajlar tablosunu önce Excel'e kaydeder,
@@ -1934,8 +1966,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
      
     def process_arbitrage(self):
-        fee_rate_buy = 0.0005
-        fee_rate_sell = 0.0005
+        fee_rate_buy = self.ask_fee_rate
+        fee_rate_sell = self.bid_fee_rate
         data = self.askbid_model._data
 
         # Remove stale opportunities that exceeded max duration
