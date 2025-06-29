@@ -77,6 +77,26 @@ async def _supabase_post(endpoint: str, payload: dict) -> bool:
 
 
 async def upload_closed_data(df: pd.DataFrame) -> None:
+    # 🔁 Türkçe başlıkları Supabase’in istediği field'lara çevir
+    column_mapping = {
+        "Symbol": "symbol",
+        "Alım Exch": "buy_exch",
+        "Satım Exch": "sell_exch",
+        "Başlangıç Zamanı": "start_dt",
+        "Bitiş Zamanı": "end_dt",
+        "Süre": "duration",
+        "İlk Ask": "initial_ask",
+        "İlk Bid": "initial_bid",
+        "Son Ask": "final_ask",
+        "Son Bid": "final_bid",
+        "Alım FR": "buy_fr",
+        "Satım FR": "sell_fr",
+        "Oran": "rate",
+        "Son Oran": "final_rate",
+        "Tekrar Sayısı": "repeat_count"
+    }
+    df.rename(columns=column_mapping, inplace=True)
+    
     """Upload rows of the given dataframe to closed_arbitrage_logs."""
     for _, row in df.iterrows():
         data = row.to_dict()
@@ -2193,8 +2213,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 asyncio.run(upload_closed_data(df))
             except RuntimeError:
                 loop = asyncio.new_event_loop()
-                loop.run_until_complete(upload_closed_data(df))
-                loop.close()
+                if loop.is_running():
+                    asyncio.create_task(upload_closed_data(df))
+                else:
+                    loop.run_until_complete(upload_closed_data(df))
 
         super().closeEvent(event)
 
