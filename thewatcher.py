@@ -107,6 +107,11 @@ async def upload_closed_data(df: pd.DataFrame) -> None:
     """Upload rows of the given dataframe to closed_arbitrage_logs."""
     for _, row in df.iterrows():
         data = row.to_dict()
+        # Convert start/end timestamps to ISO 8601 strings for Supabase
+        for col in ("start_dt", "end_dt"):
+            if col in data and pd.notna(data[col]):
+                ts = pd.to_datetime(data[col])
+                data[col] = ts.strftime("%Y-%m-%dT%H:%M:%S")
         ok = await _supabase_post("closed_arbitrage_logs", data)
         if not ok:
             print(f"Failed to upload row: {data}")
