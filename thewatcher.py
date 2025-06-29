@@ -47,24 +47,26 @@ BYBIT_BATCH_SIZE     = 50
 BYBIT_OPEN_TIMEOUT   = 30
 BYBIT_CLOSE_TIMEOUT  = 10
 
+SUPABASE_URL = "https://obtqpnfcfmybasnzclqf.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9idHFwbmZjZm15YmFzbnpjbHFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNTYzMDYsImV4cCI6MjA2NjczMjMwNn0.7XIFyJoBSqV1L-QeMJY14bOfbpGiFqHUTAsqK4e67ao"
+
+
+
 # Supabase configuration. Set these environment variables to override the
 # defaults when running the application.
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://obtqpnfcfmybasnzclqf.supabase.co"
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz..."
 if not SUPABASE_URL or not SUPABASE_KEY:
     print(
         "Warning: SUPABASE_URL and SUPABASE_KEY not set; Supabase features will be disabled"
     )
 
-SUPABASE_URL = "https://obtqpnfcfmybasnzclqf.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9idHFwbmZjZm15YmFzbnpjbHFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNTYzMDYsImV4cCI6MjA2NjczMjMwNn0.7XIFyJoBSqV1L-QeMJY14bOfbpGiFqHUTAsqK4e67ao"
 
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
 
 
 async def _supabase_post(endpoint: str, payload: dict) -> bool:
-    """Post JSON data to a Supabase REST endpoint."""
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("[Supabase] configuration missing, skipping request")
         return False
@@ -73,16 +75,19 @@ async def _supabase_post(endpoint: str, payload: dict) -> bool:
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal",
+        "Prefer": "return=representation",
     }
+    print(f"[Supabase] POST to {url}")
     print("POST edilecek payload:", payload)
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as resp:
+                text = await resp.text()
+                print(f"[Supabase] Yanıt: {resp.status} - {text}")  # ← BUNU EKLE
                 if resp.status >= 400:
-                    text = await resp.text()
-                    print(f"[Supabase] {resp.status}: {text}")
+                    print(f"[Supabase] {resp.status} HATA: {text}")
                     return False
+                print(f"[Supabase] {resp.status} OK: {text}")
                 return True
     except Exception as e:
         print(f"[Supabase] request failed: {e}")
@@ -90,6 +95,7 @@ async def _supabase_post(endpoint: str, payload: dict) -> bool:
 
 
 async def upload_closed_data(df: pd.DataFrame) -> None:
+    print("🧾 Supabase'e gönderilecek toplam satır sayısı:", len(df))
     # 🔁 Türkçe başlıkları Supabase’in istediği field'lara çevir
     column_mapping = {
         "Symbol": "symbol",
@@ -114,17 +120,41 @@ async def upload_closed_data(df: pd.DataFrame) -> None:
         print("[Supabase] configuration missing, skipping upload_closed_data")
         return
 
-    """Upload rows of the given dataframe to closed_arbitrage_logs."""
     for _, row in df.iterrows():
         data = row.to_dict()
-        # Convert start/end timestamps to ISO 8601 strings for Supabase
+
+        # Sayısal alanları float'a çevir
+        float_fields = [
+            "rate", "final_rate",
+            "initial_ask", "initial_bid",
+            "final_ask", "final_bid",
+            "buy_fr", "sell_fr"
+        ]
+        for field in float_fields:
+            if field in data:
+                try:
+                    data[field] = float(data[field])
+                except:
+                    data[field] = None
+
+        # repeat_count'ı int yap
+        if "repeat_count" in data:
+            try:
+                data["repeat_count"] = int(data["repeat_count"])
+            except:
+                data["repeat_count"] = 0
+
+        # Tarih alanlarını ISO 8601'e çevir (Z yok çünkü Supabase timezone istemiyor)
         for col in ("start_dt", "end_dt"):
             if col in data and pd.notna(data[col]):
-                ts = pd.to_datetime(data[col])
+                ts = pd.to_datetime(data[col], format='%d/%m/%Y %H:%M:%S')
                 data[col] = ts.strftime("%Y-%m-%dT%H:%M:%S")
+
+        # POST işlemi
         ok = await _supabase_post("closed_arbitrage_logs", data)
         if not ok:
-            print(f"Failed to upload row: {data}")
+            print(f"❌ Failed to upload row:\n{json.dumps(data, indent=2)}")
+
 
 
 # --- Helper: normalize for subscription endpoints ---
@@ -2216,52 +2246,40 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 # --- Qt override -------------------------------------------------------------
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        """Export closed table without prompting and upload before exit."""
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.expanduser(f"~/Desktop/closed_on_exit_{ts}.xlsx")
+def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+    """Program kapanırken Supabase'e garanti veri yaz."""
 
-        headers = [
-            self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
-            for c in range(self.arb_model.columnCount() - 1)
-        ]
+    from pathlib import Path
 
-        rows = []
-        for r in range(self.closed_proxy.rowCount()):
-            rec = {}
-            for c in range(self.closed_proxy.columnCount() - 1):
-                idx = self.closed_proxy.index(r, c)
-                rec[headers[c]] = self.closed_proxy.data(idx, QtCore.Qt.DisplayRole)
-            rows.append(rec)
+    headers = [
+        self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
+        for c in range(self.arb_model.columnCount() - 1)
+    ]
 
-        df = pd.DataFrame(rows, columns=headers)
-        if not df.empty:
-            try:
-                df.to_excel(path, index=False)
-                print(f"Saved closed arbitrages: {path}")
-            except Exception as e:
-                print(f"Excel export failed: {e}")
+    rows = []
+    for r in range(self.closed_proxy.rowCount()):
+        rec = {}
+        for c in range(self.closed_proxy.columnCount() - 1):
+            idx = self.closed_proxy.index(r, c)
+            rec[headers[c]] = self.closed_proxy.data(idx, QtCore.Qt.DisplayRole)
+        rows.append(rec)
 
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                self.tasks.append(loop.create_task(upload_closed_data(df)))
-            else:
-                loop.run_until_complete(upload_closed_data(df))
-        
+    df = pd.DataFrame(rows, columns=headers)
 
-        loop = asyncio.get_event_loop()
-        async def _shutdown():
-            for t in list(self.tasks):
-                t.cancel()
-            await asyncio.gather(*self.tasks, return_exceptions=True)
-            loop.stop()
+    if not df.empty:
+        try:
+            print("📤 Supabase'e gönderiliyor...")
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(upload_closed_data(df))
+            loop.close()
+            print("✅ Supabase gönderimi tamamlandı.")
+        except Exception as e:
+            print(f"❌ Supabase gönderim hatası: {e}")
 
-        if loop.is_running():
-            loop.create_task(_shutdown())
-        else:
-            loop.run_until_complete(_shutdown())
-
-        super().closeEvent(event)
+    # GUI kapansın
+    super().closeEvent(event)
 
 
 
@@ -2692,7 +2710,9 @@ def main():
 
     QtCore.QTimer.singleShot(5000, show_main)
 
-    loop.run_forever()
+    # Ensure the event loop is properly closed when the application exits
+    with loop:
+        loop.run_forever()
 
 if __name__ == "__main__":
     main()
