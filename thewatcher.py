@@ -9,14 +9,14 @@ import pandas as pd
 
 import aiohttp
 import websockets
-from websockets.exceptions import ConnectionClosedError
+
 
 from PySide6 import QtWidgets, QtCore, QtGui, QtCharts
 from PySide6.QtWidgets import QHeaderView
 from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QValueAxis)
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 import qasync
-import random
+
 import matplotlib
 
 
