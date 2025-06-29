@@ -1101,6 +1101,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_order        = QtWidgets.QPushButton("Ask/Bid - Order Book")
         self.btn_arb          = QtWidgets.QPushButton("Arbitraj Diff")
         self.btn_chart        = QtWidgets.QPushButton("Chart Selection")
+        self.btn_db           = QtWidgets.QPushButton("DB Export")
 
         # 1) Toggle butonunu oluştur, checkable yap
         self.btn_toggle_theme = QtWidgets.QPushButton("Light Mode")
@@ -1112,6 +1113,7 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_layout.addWidget(self.btn_order)
         btn_layout.addWidget(self.btn_arb)
         btn_layout.addWidget(self.btn_chart)
+        btn_layout.addWidget(self.btn_db)
 
         # 3) Sağa itmek için stretch, ardından toggle butonunu ekle
         btn_layout.addStretch()
@@ -1129,6 +1131,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_order.clicked.connect(self.open_askbid_tab)
         self.btn_arb.clicked.connect(self.open_arbitrage_tab)
         self.btn_chart.clicked.connect(self.open_chart_tab)
+        self.btn_db.clicked.connect(self.open_db_tab)
         
 
 
@@ -1144,6 +1147,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.open_funding_tab()
         self.open_askbid_tab()
         self.open_arbitrage_tab()
+        self.open_db_tab()
 
         # Arbitraj Hesapla butonu
         self.btn_arbitrage_calc.clicked.connect(self.on_arbitrage_calculate)
@@ -1594,6 +1598,76 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.tabs.addTab(page, "Chart Selection")
         self.tabs.setCurrentWidget(page)
+
+    def open_db_tab(self):
+        """Create or activate the database export tab."""
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "DB Export":
+                self.tabs.setCurrentIndex(i)
+                return
+
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(5, 5, 5, 5)
+
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("Start:"))
+        self.db_start_edit = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime().addDays(-1))
+        self.db_start_edit.setCalendarPopup(True)
+        row.addWidget(self.db_start_edit)
+
+        row.addWidget(QtWidgets.QLabel("End:"))
+        self.db_end_edit = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime())
+        self.db_end_edit.setCalendarPopup(True)
+        row.addWidget(self.db_end_edit)
+
+        self.btn_db_download = QtWidgets.QPushButton("Verileri İndir")
+        row.addWidget(self.btn_db_download)
+        row.addStretch()
+        layout.addLayout(row)
+        layout.addStretch()
+
+        self.btn_db_download.clicked.connect(lambda: asyncio.create_task(self._download_db_logs()))
+
+        self.tabs.addTab(page, "DB Export")
+        self.tabs.setCurrentWidget(page)
+
+    async def _download_db_logs(self):
+        start_iso = self.db_start_edit.dateTime().toPython().isoformat()
+        end_iso = self.db_end_edit.dateTime().toPython().isoformat()
+        url = f"{SUPABASE_URL}/rest/v1/closed_arbitrage_logs"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+        }
+        params = [
+            ("select", "*"),
+            ("start_dt", f"gte.{start_iso}"),
+            ("start_dt", f"lte.{end_iso}"),
+            ("order", "start_dt.desc"),
+        ]
+
+        async with aiohttp.ClientSession() as session:
+            resp = await session.get(url, headers=headers, params=params)
+            if resp.status >= 400:
+                text = await resp.text()
+                QtWidgets.QMessageBox.critical(self, "Hata", f"Supabase isteği başarısız:\n{resp.status}\n{text}")
+                return
+            rows = await resp.json()
+
+        if not rows:
+            QtWidgets.QMessageBox.information(self, "Bilgi", "Belirtilen aralıkta veri bulunamadı.")
+            return
+
+        df = pd.DataFrame(rows)
+        df.sort_values("start_dt", ascending=False, inplace=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.expanduser(f"~/Desktop/export_{ts}.xlsx")
+        try:
+            df.to_excel(path, index=False)
+            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
 
 
 
