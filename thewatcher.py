@@ -52,9 +52,12 @@ BYBIT_CLOSE_TIMEOUT  = 10
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError(
-        "SUPABASE_URL and SUPABASE_KEY environment variables must be set"
+    print(
+        "Warning: SUPABASE_URL and SUPABASE_KEY not set; Supabase features will be disabled"
     )
+
+SUPABASE_URL = None
+SUPABASE_KEY = None
 
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
@@ -62,6 +65,9 @@ FEE_RATE_SELL = 0.0005  # Commission rate when selling
 
 async def _supabase_post(endpoint: str, payload: dict) -> bool:
     """Post JSON data to a Supabase REST endpoint."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[Supabase] configuration missing, skipping request")
+        return False
     url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -103,6 +109,10 @@ async def upload_closed_data(df: pd.DataFrame) -> None:
         "Tekrar Sayısı": "repeat_count"
     }
     df.rename(columns=column_mapping, inplace=True)
+
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[Supabase] configuration missing, skipping upload_closed_data")
+        return
 
     """Upload rows of the given dataframe to closed_arbitrage_logs."""
     for _, row in df.iterrows():
@@ -1665,6 +1675,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.setCurrentWidget(page)
 
     async def _download_db_logs(self):
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Supabase",
+                "Supabase configuration missing; cannot download logs."
+            )
+            return
         start_iso = self.db_start_edit.dateTime().toPython().isoformat()
         end_iso = self.db_end_edit.dateTime().toPython().isoformat()
         url = f"{SUPABASE_URL}/rest/v1/closed_arbitrage_logs"
