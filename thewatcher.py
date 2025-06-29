@@ -56,8 +56,8 @@ if not SUPABASE_URL or not SUPABASE_KEY:
         "Warning: SUPABASE_URL and SUPABASE_KEY not set; Supabase features will be disabled"
     )
 
-SUPABASE_URL = None
-SUPABASE_KEY = None
+SUPABASE_URL = "https://obtqpnfcfmybasnzclqf.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9idHFwbmZjZm15YmFzbnpjbHFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNTYzMDYsImV4cCI6MjA2NjczMjMwNn0.7XIFyJoBSqV1L-QeMJY14bOfbpGiFqHUTAsqK4e67ao"
 
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
@@ -2248,12 +2248,18 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 loop.run_until_complete(upload_closed_data(df))
         
-        # Çalışan görevleri iptal et ve event loop'u durdur
+
         loop = asyncio.get_event_loop()
-        for t in list(self.tasks):
-            t.cancel()
+        async def _shutdown():
+            for t in list(self.tasks):
+                t.cancel()
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+            loop.stop()
+
         if loop.is_running():
-            loop.call_soon(loop.stop)
+            loop.create_task(_shutdown())
+        else:
+            loop.run_until_complete(_shutdown())
 
         super().closeEvent(event)
 
