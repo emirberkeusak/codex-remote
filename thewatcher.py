@@ -17,6 +17,7 @@ from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QV
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 import qasync
 from qasync import asyncSlot
+from typing import Callable
 
 
 
@@ -94,7 +95,7 @@ async def _supabase_post(endpoint: str, payload: dict) -> bool:
         return False
 
 
-async def upload_closed_data(df: pd.DataFrame) -> None:
+async def upload_closed_data(df: pd.DataFrame, progress_cb: Callable[[int, int], None] | None = None) -> None:
     print("🧾 Supabase'e gönderilecek toplam satır sayısı:", len(df))
     # 🔁 Türkçe başlıkları Supabase’in istediği field'lara çevir
     column_mapping = {
@@ -120,7 +121,8 @@ async def upload_closed_data(df: pd.DataFrame) -> None:
         print("[Supabase] configuration missing, skipping upload_closed_data")
         return
 
-    for _, row in df.iterrows():
+    total = len(df)
+    for idx, row in df.iterrows():
         data = row.to_dict()
 
         # Sayısal alanları float'a çevir
@@ -154,6 +156,8 @@ async def upload_closed_data(df: pd.DataFrame) -> None:
         ok = await _supabase_post("closed_arbitrage_logs", data)
         if not ok:
             print(f"❌ Failed to upload row:\n{json.dumps(data, indent=2)}")
+        if progress_cb:
+            progress_cb(idx + 1, total)
 
 
 
@@ -383,6 +387,31 @@ class MultiSelectDropdown(QtWidgets.QWidget):
                     self._selected_items.add(it)
             if old != self._selected_items:
                 self.selectionChanged.emit(self._selected_items)
+
+# --- Upload progress dialog ---
+class SyncDialog(QtWidgets.QDialog):
+    def __init__(self, total: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Senkronizasyon")
+        self.setModal(True)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.label = QtWidgets.QLabel("Veriler senkronize ediliyor…", self)
+        layout.addWidget(self.label)
+        self.bar = QtWidgets.QProgressBar(self)
+        self.bar.setRange(0, max(1, total))
+        layout.addWidget(self.bar)
+        self.btn = QtWidgets.QPushButton("Tamam", self)
+        self.btn.setEnabled(False)
+        layout.addWidget(self.btn)
+        self.btn.clicked.connect(self.accept)
+
+    def update_progress(self, val: int):
+        self.bar.setValue(val)
+
+    def finalize(self):
+        self.label.setText("Senkronizasyon tamamlandı.")
+        self.bar.setValue(self.bar.maximum())
+        self.btn.setEnabled(True)
 
 
 
@@ -2247,9 +2276,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 # --- Qt override -------------------------------------------------------------
 def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-    """Program kapanırken Supabase'e garanti veri yaz."""
-
-    from pathlib import Path
+    """Program kapanırken verileri Supabase'e senkronize et."""
 
     headers = [
         self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
@@ -2266,19 +2293,22 @@ def closeEvent(self, event: QtGui.QCloseEvent) -> None:
 
     df = pd.DataFrame(rows, columns=headers)
 
-    if not df.empty:
-        try:
-            print("📤 Supabase'e gönderiliyor...")
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(upload_closed_data(df))
-            loop.close()
-            print("✅ Supabase gönderimi tamamlandı.")
-        except Exception as e:
-            print(f"❌ Supabase gönderim hatası: {e}")
+    if df.empty:
+        super().closeEvent(event)
+        return
 
-    # GUI kapansın
+    event.ignore()
+
+    dialog = SyncDialog(len(df), self)
+
+    async def run_upload():
+        await upload_closed_data(df, lambda cur, total: dialog.update_progress(cur))
+        dialog.finalize()
+
+    asyncio.create_task(run_upload())
+    dialog.exec()
+
+    event.accept()
     super().closeEvent(event)
 
 
