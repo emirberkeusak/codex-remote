@@ -47,8 +47,14 @@ BYBIT_BATCH_SIZE     = 50
 BYBIT_OPEN_TIMEOUT   = 30
 BYBIT_CLOSE_TIMEOUT  = 10
 
-SUPABASE_URL = "https://obtqpnfcfmybasnzclqf.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9idHFwbmZjZm15YmFzbnpjbHFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNTYzMDYsImV4cCI6MjA2NjczMjMwNn0.7XIFyJoBSqV1L-QeMJY14bOfbpGiFqHUTAsqK4e67ao"
+# Supabase configuration. Set these environment variables to override the
+# defaults when running the application.
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://obtqpnfcfmybasnzclqf.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9idHFwbmZjZm15YmFzbnpjbHFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNTYzMDYsImV4cCI6MjA2NjczMjMwNn0.7XIFyJoBSqV1L-QeMJY14bOfbpGiFqHUTAsqK4e67ao")
+if not SUPABASE_KEY:
+    raise RuntimeError(
+        "SUPABASE_KEY environment variable not set; please export your project API key"
+    )
 
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
