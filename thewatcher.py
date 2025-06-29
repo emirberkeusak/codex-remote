@@ -2224,9 +2224,10 @@ class MainWindow(QtWidgets.QMainWindow):
             try:
                 asyncio.run(upload_closed_data(df))
             except RuntimeError:
-                loop = asyncio.new_event_loop()
+                loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    asyncio.create_task(upload_closed_data(df))
+                    task = loop.create_task(upload_closed_data(df))
+                    loop.run_until_complete(task)
                 else:
                     loop.run_until_complete(upload_closed_data(df))
 
