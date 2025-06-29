@@ -17,7 +17,7 @@ from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QV
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 import qasync
 from qasync import asyncSlot
-import matplotlib
+
 
 
 def resource_path(relative_path):
@@ -2567,7 +2567,6 @@ def main():
     # Splash ekranı (görselin yolunu ayarla)
     pixmap_path = resource_path("splash.png")
     splash_pix = QtGui.QPixmap(pixmap_path)
-    print("Splash is null?", splash_pix.isNull())  # Kontrol için
     splash = QtWidgets.QSplashScreen(splash_pix, QtCore.Qt.WindowStaysOnTopHint)
     splash.setMask(splash_pix.mask())
     splash.show()
