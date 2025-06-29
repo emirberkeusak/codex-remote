@@ -1644,7 +1644,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ("select", "*"),
             ("start_dt", f"gte.{start_iso}"),
             ("start_dt", f"lte.{end_iso}"),
-            ("order", "start_dt.desc"),
+            ("order", "start_dt.desc()"),
         ]
 
         async with aiohttp.ClientSession() as session:
