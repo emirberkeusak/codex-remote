@@ -1733,7 +1733,9 @@ class MainWindow(QtWidgets.QMainWindow):
         """Kapanmış arbitrajları Excel'e aktar."""
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         name = f"closed_arbitrages_{ts}.xlsx"
-        self._export_arbitrage(self.closed_proxy, name)
+        df = self._export_arbitrage(self.closed_proxy, name)
+        if df is not None:
+            asyncio.create_task(upload_closed_data(df))
 
 
     def _export_arbitrage(self, proxy, default_name):
@@ -1771,6 +1773,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
+        
+        return df
 
     def on_export_askbid_excel(self):
         """Ask/Bid tablosunu Excel'e aktar."""
@@ -2156,6 +2160,43 @@ class MainWindow(QtWidgets.QMainWindow):
                                     self.arb_model.remove_event(row)
                                 else:
                                     self.arb_model.end_event(row)
+
+
+# --- Qt override -------------------------------------------------------------
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """Export closed table without prompting and upload before exit."""
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.expanduser(f"~/Desktop/closed_on_exit_{ts}.xlsx")
+
+        headers = [
+            self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
+            for c in range(self.arb_model.columnCount() - 1)
+        ]
+
+        rows = []
+        for r in range(self.closed_proxy.rowCount()):
+            rec = {}
+            for c in range(self.closed_proxy.columnCount() - 1):
+                idx = self.closed_proxy.index(r, c)
+                rec[headers[c]] = self.closed_proxy.data(idx, QtCore.Qt.DisplayRole)
+            rows.append(rec)
+
+        df = pd.DataFrame(rows, columns=headers)
+        if not df.empty:
+            try:
+                df.to_excel(path, index=False)
+                print(f"Saved closed arbitrages: {path}")
+            except Exception as e:
+                print(f"Excel export failed: {e}")
+
+            try:
+                asyncio.run(upload_closed_data(df))
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(upload_closed_data(df))
+                loop.close()
+
+        super().closeEvent(event)
 
 
 
