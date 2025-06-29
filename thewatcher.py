@@ -47,8 +47,42 @@ BYBIT_BATCH_SIZE     = 50
 BYBIT_OPEN_TIMEOUT   = 30
 BYBIT_CLOSE_TIMEOUT  = 10
 
+SUPABASE_URL = "https://obtqpnfcfmybasnzclqf.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9idHFwbmZjZm15YmFzbnpjbHFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNTYzMDYsImV4cCI6MjA2NjczMjMwNn0.7XIFyJoBSqV1L-QeMJY14bOfbpGiFqHUTAsqK4e67ao"
+
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
+
+
+async def _supabase_post(endpoint: str, payload: dict) -> bool:
+    """Post JSON data to a Supabase REST endpoint."""
+    url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    print(f"[Supabase] {resp.status}: {text}")
+                    return False
+                return True
+    except Exception as e:
+        print(f"[Supabase] request failed: {e}")
+        return False
+
+
+async def upload_closed_data(df: pd.DataFrame) -> None:
+    """Upload rows of the given dataframe to closed_arbitrage_logs."""
+    for _, row in df.iterrows():
+        data = row.to_dict()
+        ok = await _supabase_post("closed_arbitrage_logs", data)
+        if not ok:
+            print(f"Failed to upload row: {data}")
 
 
 # --- Helper: normalize for subscription endpoints ---
