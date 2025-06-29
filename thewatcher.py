@@ -1104,6 +1104,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_funding: dict[tuple[str,str], float] = {}
         # Açılan grafik pencerelerini tut
         self.chart_windows: list[ChartWindow] = []
+        # Çalışan asenkron görevleri sakla
+        self.tasks: list[asyncio.Task] = []
 
         # Merkezi container ve layout
         container = QtWidgets.QWidget(self)
