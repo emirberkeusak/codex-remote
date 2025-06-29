@@ -1420,11 +1420,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not hasattr(self, "_askbid_task_scheduled"):
             loop = asyncio.get_event_loop()
-            loop.create_task(publish_binance_askbid(self._enqueue_askbid, self._update_status_ab))
-            loop.create_task(publish_okx_askbid(self._enqueue_askbid, self._update_status_ab))
-            loop.create_task(publish_bybit_askbid(self._enqueue_askbid, self._update_status_ab))
-            loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab))
-            loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab))
+            self.tasks.extend([
+                loop.create_task(publish_binance_askbid(self._enqueue_askbid, self._update_status_ab)),
+                loop.create_task(publish_okx_askbid(self._enqueue_askbid, self._update_status_ab)),
+                loop.create_task(publish_bybit_askbid(self._enqueue_askbid, self._update_status_ab)),
+                loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab)),
+                loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab)),
+            ])
             self._askbid_task_scheduled = True
 
     # Arbitraj sekmesini aç
@@ -2240,9 +2242,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                loop.create_task(upload_closed_data(df))
+                self.tasks.append(loop.create_task(upload_closed_data(df)))
             else:
                 loop.run_until_complete(upload_closed_data(df))
+        
+        # Çalışan görevleri iptal et ve event loop'u durdur
+        loop = asyncio.get_event_loop()
+        for t in list(self.tasks):
+            t.cancel()
+        if loop.is_running():
+            loop.call_soon(loop.stop)
 
         super().closeEvent(event)
 
@@ -2262,6 +2271,9 @@ async def publish_binance(cb, status_cb):
                     for u in m.get("data", []):
                         if "s" in u and "r" in u:
                             cb("Binance", u["s"], float(u["r"]) * 100)
+        except asyncio.CancelledError:
+            status_cb("Binance", False)
+            break
         except Exception as e:
             # bağlantı koptu → indicator’u mavi yap
             status_cb("Binance", False)
@@ -2296,6 +2308,9 @@ async def publish_okx(cb, status_cb):
                     m = json.loads(raw)
                     for e in m.get("data", []):
                         cb("OKX", e["instId"], float(e["fundingRate"]) * 100)
+        except asyncio.CancelledError:
+            status_cb("Binance", False)
+            break
         except Exception as ex:
             # bağlantı koptu
             status_cb("OKX", False)
@@ -2324,6 +2339,9 @@ async def handle_bybit_batch(syms, cb, status_cb):
                     for d in entries:
                         if "symbol" in d and "fundingRate" in d:
                             cb("Bybit", d["symbol"], float(d["fundingRate"]) * 100)
+        except asyncio.CancelledError:
+            status_cb("Bybit", False)
+            break
         except Exception as e:
             # Mark connection down
             status_cb("Bybit", False)
@@ -2331,12 +2349,14 @@ async def handle_bybit_batch(syms, cb, status_cb):
             await asyncio.sleep(5)
 
 
-async def publish_bybit(cb, status_cb):
+async def publish_bybit(cb, status_cb, task_list=None):
     # fetch all USDT swaps
     syms = await fetch_bybit_swaps()
     # fan out in batches
     for batch in [syms[i:i+BYBIT_BATCH_SIZE] for i in range(0, len(syms), BYBIT_BATCH_SIZE)]:
-        asyncio.create_task(handle_bybit_batch(batch, cb, status_cb))
+        t = asyncio.create_task(handle_bybit_batch(batch, cb, status_cb))
+        if task_list is not None:
+            task_list.append(t)
         await asyncio.sleep(1)
 
 async def handle_bitget_batch(syms, cb, status_cb):
@@ -2353,15 +2373,20 @@ async def handle_bitget_batch(syms, cb, status_cb):
                         for d in data.get("data", []):
                             if "instId" in d and "fundingRate" in d:
                                 cb("Bitget", d["instId"], float(d["fundingRate"]) * 100)
+        except asyncio.CancelledError:
+            status_cb("Bitget", False)
+            break
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget] Error: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
 
-async def publish_bitget(cb, status_cb):
+async def publish_bitget(cb, status_cb, task_list=None):
     syms = await fetch_bitget_swaps()
     for batch in [syms[i:i+50] for i in range(0, len(syms), 50)]:
-        asyncio.create_task(handle_bitget_batch(batch, cb, status_cb))
+        t = asyncio.create_task(handle_bitget_batch(batch, cb, status_cb))
+        if task_list is not None:
+            task_list.append(t)
         await asyncio.sleep(1)
 
 
@@ -2393,7 +2418,10 @@ async def publish_gateio(cb, status_cb):
                         for d in m.get("result", []):
                             if "contract" in d and "funding_rate" in d:
                                 cb("Gateio", d["contract"], float(d["funding_rate"]) * 100)
-
+        
+        except asyncio.CancelledError:
+            status_cb("Gateio", False)
+            break
         except Exception as e:
             # connection down
             status_cb("Gateio", False)
@@ -2412,6 +2440,10 @@ async def publish_binance_askbid(cb, status_cb):
                     msg = json.loads(raw)
                     if msg.get("e") == "bookTicker":
                         cb("Binance", msg["s"], float(msg["b"]), float(msg["a"]))
+        
+        except asyncio.CancelledError:
+            status_cb("Binance", False)
+            break
         except Exception as e:
             status_cb("Binance", False)
             print(f"[Binance AskBid] Error: {e}, reconnecting in 5s")
@@ -2454,6 +2486,10 @@ async def publish_okx_askbid(cb, status_cb):
                             bid_price = float(bids[0][0])
                             ask_price = float(asks[0][0])
                             cb("OKX", instId, bid_price, ask_price)
+        
+        except asyncio.CancelledError:
+            status_cb("OKX", False)
+            break
         except Exception as e:
             status_cb("OKX", False)
             print(f"[OKX AskBid] Error: {e}, reconnect in 5s")
@@ -2490,6 +2526,10 @@ async def publish_bybit_askbid(cb, status_cb):
                         bid_price = float(bids[0][0])
                         ask_price = float(asks[0][0])
                         cb("Bybit", sym, bid_price, ask_price)
+        
+        except asyncio.CancelledError:
+            status_cb("Bybit", False)
+            break
         except Exception as e:
             status_cb("Bybit", False)
             print(f"[Bybit AskBid] Error: {e}, reconnect in 5s")
@@ -2529,7 +2569,10 @@ async def publish_bitget_askbid(cb, status_cb):
                             ask  = d.get("askPr")
                             if inst and bid is not None and ask is not None:
                                 cb("Bitget", inst, float(bid), float(ask))
-
+        
+        except asyncio.CancelledError:
+            status_cb("Bitget", False)
+            break
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget AskBid] Error: {e}, reconnect in 5s")
@@ -2565,6 +2608,10 @@ async def publish_gateio_askbid(cb, status_cb):
                     if m.get("channel") == "futures.book_ticker" and m.get("event") == "update":
                         r = m["result"]
                         cb("Gateio", r["s"], float(r["b"]), float(r["a"]))
+
+        except asyncio.CancelledError:
+            status_cb("Gateio", False)
+            break
         except Exception as e:
             status_cb("Gateio", False)
             print(f"[Gateio AskBid] Error: {e}, reconnecting in 5s")
@@ -2627,11 +2674,13 @@ def main():
                 window.arb_model.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
 
         # WebSocket’leri sarılmış callback ile başlat
-        loop.create_task(publish_binance (fr_cb, window._update_status_fr))
-        loop.create_task(publish_okx     (fr_cb, window._update_status_fr))
-        loop.create_task(publish_bybit   (fr_cb, window._update_status_fr))
-        loop.create_task(publish_bitget  (fr_cb, window._update_status_fr))
-        loop.create_task(publish_gateio  (fr_cb, window._update_status_fr))
+        window.tasks.extend([
+            loop.create_task(publish_binance(fr_cb, window._update_status_fr)),
+            loop.create_task(publish_okx(fr_cb, window._update_status_fr)),
+            loop.create_task(publish_bybit(fr_cb, window._update_status_fr, window.tasks)),
+            loop.create_task(publish_bitget(fr_cb, window._update_status_fr, window.tasks)),
+            loop.create_task(publish_gateio(fr_cb, window._update_status_fr)),
+        ])
 
     QtCore.QTimer.singleShot(5000, show_main)
 
