@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QHeaderView
 from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QValueAxis)
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 import qasync
-
+from qasync import asyncSlot
 import matplotlib
 
 
@@ -63,6 +63,7 @@ async def _supabase_post(endpoint: str, payload: dict) -> bool:
         "Content-Type": "application/json",
         "Prefer": "return=minimal",
     }
+    print("POST edilecek payload:", payload)
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as resp:
@@ -96,7 +97,7 @@ async def upload_closed_data(df: pd.DataFrame) -> None:
         "Tekrar Sayısı": "repeat_count"
     }
     df.rename(columns=column_mapping, inplace=True)
-    
+
     """Upload rows of the given dataframe to closed_arbitrage_logs."""
     for _, row in df.iterrows():
         data = row.to_dict()
