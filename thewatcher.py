@@ -15,7 +15,7 @@ from PySide6 import QtWidgets, QtCore, QtGui, QtCharts
 from PySide6.QtWidgets import QHeaderView
 from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QValueAxis)
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
-from PySide6.QtCore import QRunnable, QThreadPool, Qt, QMetaObject
+from PySide6.QtCore import Qt
 import qasync
 import random
 import matplotlib
@@ -1869,23 +1869,11 @@ class MainWindow(QtWidgets.QMainWindow):
             df = pd.DataFrame(records)
             df = df[[c for c in columns if c in df.columns]]
 
-            class ExcelSaver(QRunnable):
-                def run(self_inner):
-                    try:
-                        df.to_excel(path, index=False)
-                        QMetaObject.invokeMethod(
-                            QtWidgets.QApplication.instance(),
-                            lambda: QtWidgets.QMessageBox.information(None, "Başarılı", f"Kaydedildi:\n{path}"),
-                            Qt.QueuedConnection
-                        )
-                    except Exception as e:
-                        QMetaObject.invokeMethod(
-                            QtWidgets.QApplication.instance(),
-                            lambda: QtWidgets.QMessageBox.critical(None, "Hata", str(e)),
-                            Qt.QueuedConnection
-                        )
-
-            QThreadPool.globalInstance().start(ExcelSaver())
+            try:
+                await asyncio.to_thread(df.to_excel, path, index=False)
+                QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Hata", str(e))
 
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Hata", str(e))
