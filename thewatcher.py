@@ -15,6 +15,7 @@ from PySide6 import QtWidgets, QtCore, QtGui, QtCharts
 from PySide6.QtWidgets import QHeaderView
 from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QValueAxis)
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
+from PySide6.QtCore import QRunnable, QThreadPool, Qt, QMetaObject
 import qasync
 import random
 import matplotlib
@@ -1823,25 +1824,57 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
 
     async def on_download_db_data(self):
+        start_dt = self.start_edit.dateTime()
+        end_dt = self.end_edit.dateTime()
+
+        start_str = start_dt.toString("yyyyMMdd_HHmmss")
+        end_str = end_dt.toString("yyyyMMdd_HHmmss")
+        default_name = f"kapanmisarbitrajlar_db_{start_str}_{end_str}.xlsx"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
-            "CSV Olarak Kaydet",
-            "",
-            "CSV Files (*.csv)"
+            "Excel Olarak Kaydet",
+            default_name,
+            "Excel Dosyaları (*.xlsx)"
         )
         if not path:
             return
 
-        start = self.start_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
-        end = self.end_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
+        start = start_dt.toString("yyyy-MM-ddTHH:mm:ss")
+        end = end_dt.toString("yyyy-MM-ddTHH:mm:ss")
 
         try:
             records = await fetch_closed_logs(start, end)
             if not records:
                 QtWidgets.QMessageBox.information(self, "Bilgi", "Veri bulunamadı")
                 return
-            pd.DataFrame(records).to_csv(path, index=False)
-            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
+
+            columns = [
+                "symbol", "buy_exch", "sell_exch", "rate",
+                "start_dt", "end_dt", "duration", "final_rate",
+                "initial_ask", "initial_bid", "final_ask", "final_bid",
+                "buy_fr", "sell_fr", "repeat_count",
+            ]
+            df = pd.DataFrame(records)
+            df = df[[c for c in columns if c in df.columns]]
+
+            class ExcelSaver(QRunnable):
+                def run(self_inner):
+                    try:
+                        df.to_excel(path, index=False)
+                        QMetaObject.invokeMethod(
+                            QtWidgets.QApplication.instance(),
+                            lambda: QtWidgets.QMessageBox.information(None, "Başarılı", f"Kaydedildi:\n{path}"),
+                            Qt.QueuedConnection
+                        )
+                    except Exception as e:
+                        QMetaObject.invokeMethod(
+                            QtWidgets.QApplication.instance(),
+                            lambda: QtWidgets.QMessageBox.critical(None, "Hata", str(e)),
+                            Qt.QueuedConnection
+                        )
+
+            QThreadPool.globalInstance().start(ExcelSaver())
+
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Hata", str(e))
 
