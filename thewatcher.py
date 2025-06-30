@@ -9,16 +9,15 @@ import pandas as pd
 
 import aiohttp
 import websockets
-
+from websockets.exceptions import ConnectionClosedError
 
 from PySide6 import QtWidgets, QtCore, QtGui, QtCharts
 from PySide6.QtWidgets import QHeaderView
 from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QValueAxis)
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 import qasync
-from qasync import asyncSlot
-from typing import Callable
-
+import random
+import matplotlib
 
 
 def resource_path(relative_path):
@@ -48,117 +47,8 @@ BYBIT_BATCH_SIZE     = 50
 BYBIT_OPEN_TIMEOUT   = 30
 BYBIT_CLOSE_TIMEOUT  = 10
 
-SUPABASE_URL = "https://obtqpnfcfmybasnzclqf.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9idHFwbmZjZm15YmFzbnpjbHFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNTYzMDYsImV4cCI6MjA2NjczMjMwNn0.7XIFyJoBSqV1L-QeMJY14bOfbpGiFqHUTAsqK4e67ao"
-
-
-
-# Supabase configuration. Set these environment variables to override the
-# defaults when running the application.
-SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://obtqpnfcfmybasnzclqf.supabase.co"
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz..."
-if not SUPABASE_URL or not SUPABASE_KEY:
-    print(
-        "Warning: SUPABASE_URL and SUPABASE_KEY not set; Supabase features will be disabled"
-    )
-
-
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
-
-
-async def _supabase_post(endpoint: str, payload: dict) -> bool:
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        print("[Supabase] configuration missing, skipping request")
-        return False
-    url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
-    print(f"[Supabase] POST to {url}")
-    print("POST edilecek payload:", payload)
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers) as resp:
-                text = await resp.text()
-                print(f"[Supabase] Yanıt: {resp.status} - {text}")  # ← BUNU EKLE
-                if resp.status >= 400:
-                    print(f"[Supabase] {resp.status} HATA: {text}")
-                    return False
-                print(f"[Supabase] {resp.status} OK: {text}")
-                return True
-    except Exception as e:
-        print(f"[Supabase] request failed: {e}")
-        return False
-
-
-async def upload_closed_data(df: pd.DataFrame, progress_cb: Callable[[int, int], None] | None = None) -> None:
-    print("🧾 Supabase'e gönderilecek toplam satır sayısı:", len(df))
-    # 🔁 Türkçe başlıkları Supabase’in istediği field'lara çevir
-    column_mapping = {
-        "Symbol": "symbol",
-        "Alım Exch": "buy_exch",
-        "Satım Exch": "sell_exch",
-        "Başlangıç Zamanı": "start_dt",
-        "Bitiş Zamanı": "end_dt",
-        "Süre": "duration",
-        "İlk Ask": "initial_ask",
-        "İlk Bid": "initial_bid",
-        "Son Ask": "final_ask",
-        "Son Bid": "final_bid",
-        "Alım FR": "buy_fr",
-        "Satım FR": "sell_fr",
-        "Oran": "rate",
-        "Son Oran": "final_rate",
-        "Tekrar Sayısı": "repeat_count"
-    }
-    df.rename(columns=column_mapping, inplace=True)
-
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        print("[Supabase] configuration missing, skipping upload_closed_data")
-        return
-
-    total = len(df)
-    for idx, row in df.iterrows():
-        data = row.to_dict()
-
-        # Sayısal alanları float'a çevir
-        float_fields = [
-            "rate", "final_rate",
-            "initial_ask", "initial_bid",
-            "final_ask", "final_bid",
-            "buy_fr", "sell_fr"
-        ]
-        for field in float_fields:
-            if field in data:
-                try:
-                    data[field] = float(data[field])
-                except:
-                    data[field] = None
-
-        # repeat_count'ı int yap
-        if "repeat_count" in data:
-            try:
-                data["repeat_count"] = int(data["repeat_count"])
-            except:
-                data["repeat_count"] = 0
-
-        # Tarih alanlarını ISO 8601'e çevir (Z yok çünkü Supabase timezone istemiyor)
-        for col in ("start_dt", "end_dt"):
-            if col in data and pd.notna(data[col]):
-                ts = pd.to_datetime(data[col], format='%d/%m/%Y %H:%M:%S')
-                data[col] = ts.strftime("%Y-%m-%dT%H:%M:%S")
-
-        # POST işlemi
-        ok = await _supabase_post("closed_arbitrage_logs", data)
-        if not ok:
-            print(f"❌ Failed to upload row:\n{json.dumps(data, indent=2)}")
-        if progress_cb:
-            progress_cb(idx + 1, total)
-
 
 
 # --- Helper: normalize for subscription endpoints ---
@@ -387,31 +277,6 @@ class MultiSelectDropdown(QtWidgets.QWidget):
                     self._selected_items.add(it)
             if old != self._selected_items:
                 self.selectionChanged.emit(self._selected_items)
-
-# --- Upload progress dialog ---
-class SyncDialog(QtWidgets.QDialog):
-    def __init__(self, total: int, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Senkronizasyon")
-        self.setModal(True)
-        layout = QtWidgets.QVBoxLayout(self)
-        self.label = QtWidgets.QLabel("Veriler senkronize ediliyor…", self)
-        layout.addWidget(self.label)
-        self.bar = QtWidgets.QProgressBar(self)
-        self.bar.setRange(0, max(1, total))
-        layout.addWidget(self.bar)
-        self.btn = QtWidgets.QPushButton("Tamam", self)
-        self.btn.setEnabled(False)
-        layout.addWidget(self.btn)
-        self.btn.clicked.connect(self.accept)
-
-    def update_progress(self, val: int):
-        self.bar.setValue(val)
-
-    def finalize(self):
-        self.label.setText("Senkronizasyon tamamlandı.")
-        self.bar.setValue(self.bar.maximum())
-        self.btn.setEnabled(True)
 
 
 
@@ -1163,8 +1028,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_funding: dict[tuple[str,str], float] = {}
         # Açılan grafik pencerelerini tut
         self.chart_windows: list[ChartWindow] = []
-        # Çalışan asenkron görevleri sakla
-        self.tasks: list[asyncio.Task] = []
 
         # Merkezi container ve layout
         container = QtWidgets.QWidget(self)
@@ -1204,7 +1067,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_order        = QtWidgets.QPushButton("Ask/Bid - Order Book")
         self.btn_arb          = QtWidgets.QPushButton("Arbitraj Diff")
         self.btn_chart        = QtWidgets.QPushButton("Chart Selection")
-        self.btn_db           = QtWidgets.QPushButton("DB Export")
 
         # 1) Toggle butonunu oluştur, checkable yap
         self.btn_toggle_theme = QtWidgets.QPushButton("Light Mode")
@@ -1216,7 +1078,6 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_layout.addWidget(self.btn_order)
         btn_layout.addWidget(self.btn_arb)
         btn_layout.addWidget(self.btn_chart)
-        btn_layout.addWidget(self.btn_db)
 
         # 3) Sağa itmek için stretch, ardından toggle butonunu ekle
         btn_layout.addStretch()
@@ -1234,7 +1095,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_order.clicked.connect(self.open_askbid_tab)
         self.btn_arb.clicked.connect(self.open_arbitrage_tab)
         self.btn_chart.clicked.connect(self.open_chart_tab)
-        self.btn_db.clicked.connect(self.open_db_tab)
         
 
 
@@ -1250,7 +1110,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.open_funding_tab()
         self.open_askbid_tab()
         self.open_arbitrage_tab()
-        self.open_db_tab()
 
         # Arbitraj Hesapla butonu
         self.btn_arbitrage_calc.clicked.connect(self.on_arbitrage_calculate)
@@ -1481,13 +1340,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not hasattr(self, "_askbid_task_scheduled"):
             loop = asyncio.get_event_loop()
-            self.tasks.extend([
-                loop.create_task(publish_binance_askbid(self._enqueue_askbid, self._update_status_ab)),
-                loop.create_task(publish_okx_askbid(self._enqueue_askbid, self._update_status_ab)),
-                loop.create_task(publish_bybit_askbid(self._enqueue_askbid, self._update_status_ab)),
-                loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab)),
-                loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab)),
-            ])
+            loop.create_task(publish_binance_askbid(self._enqueue_askbid, self._update_status_ab))
+            loop.create_task(publish_okx_askbid(self._enqueue_askbid, self._update_status_ab))
+            loop.create_task(publish_bybit_askbid(self._enqueue_askbid, self._update_status_ab))
+            loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab))
+            loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab))
             self._askbid_task_scheduled = True
 
     # Arbitraj sekmesini aç
@@ -1704,83 +1561,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(page, "Chart Selection")
         self.tabs.setCurrentWidget(page)
 
-    def open_db_tab(self):
-        """Create or activate the database export tab."""
-        for i in range(self.tabs.count()):
-            if self.tabs.tabText(i) == "DB Export":
-                self.tabs.setCurrentIndex(i)
-                return
-
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setContentsMargins(5, 5, 5, 5)
-
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("Start:"))
-        self.db_start_edit = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime().addDays(-1))
-        self.db_start_edit.setCalendarPopup(True)
-        row.addWidget(self.db_start_edit)
-
-        row.addWidget(QtWidgets.QLabel("End:"))
-        self.db_end_edit = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime())
-        self.db_end_edit.setCalendarPopup(True)
-        row.addWidget(self.db_end_edit)
-
-        self.btn_db_download = QtWidgets.QPushButton("Verileri İndir")
-        row.addWidget(self.btn_db_download)
-        row.addStretch()
-        layout.addLayout(row)
-        layout.addStretch()
-
-        self.btn_db_download.clicked.connect(lambda: asyncio.create_task(self._download_db_logs()))
-
-        self.tabs.addTab(page, "DB Export")
-        self.tabs.setCurrentWidget(page)
-
-    async def _download_db_logs(self):
-        if not SUPABASE_URL or not SUPABASE_KEY:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Supabase",
-                "Supabase configuration missing; cannot download logs."
-            )
-            return
-        start_iso = self.db_start_edit.dateTime().toPython().isoformat()
-        end_iso = self.db_end_edit.dateTime().toPython().isoformat()
-        url = f"{SUPABASE_URL}/rest/v1/closed_arbitrage_logs"
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-        }
-        params = [
-            ("select", "*"),
-            ("start_dt", f"gte.{start_iso}"),
-            ("start_dt", f"lte.{end_iso}"),
-            ("order", "start_dt.desc()"),
-        ]
-
-        async with aiohttp.ClientSession() as session:
-            resp = await session.get(url, headers=headers, params=params)
-            if resp.status >= 400:
-                text = await resp.text()
-                QtWidgets.QMessageBox.critical(self, "Hata", f"Supabase isteği başarısız:\n{resp.status}\n{text}")
-                return
-            rows = await resp.json()
-
-        if not rows:
-            QtWidgets.QMessageBox.information(self, "Bilgi", "Belirtilen aralıkta veri bulunamadı.")
-            return
-
-        df = pd.DataFrame(rows)
-        df.sort_values("start_dt", ascending=False, inplace=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.expanduser(f"~/Desktop/export_{ts}.xlsx")
-        try:
-            df.to_excel(path, index=False)
-            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
-
 
 
     # Açık dropdown güncelle
@@ -1845,9 +1625,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Kapanmış arbitrajları Excel'e aktar."""
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         name = f"closed_arbitrages_{ts}.xlsx"
-        df = self._export_arbitrage(self.closed_proxy, name)
-        if df is not None:
-            asyncio.create_task(upload_closed_data(df))
+        self._export_arbitrage(self.closed_proxy, name)
 
 
     def _export_arbitrage(self, proxy, default_name):
@@ -1885,8 +1663,6 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
-        
-        return df
 
     def on_export_askbid_excel(self):
         """Ask/Bid tablosunu Excel'e aktar."""
@@ -2274,44 +2050,6 @@ class MainWindow(QtWidgets.QMainWindow):
                                     self.arb_model.end_event(row)
 
 
-# --- Qt override -------------------------------------------------------------
-def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-    """Program kapanırken verileri Supabase'e senkronize et."""
-
-    headers = [
-        self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
-        for c in range(self.arb_model.columnCount() - 1)
-    ]
-
-    rows = []
-    for r in range(self.closed_proxy.rowCount()):
-        rec = {}
-        for c in range(self.closed_proxy.columnCount() - 1):
-            idx = self.closed_proxy.index(r, c)
-            rec[headers[c]] = self.closed_proxy.data(idx, QtCore.Qt.DisplayRole)
-        rows.append(rec)
-
-    df = pd.DataFrame(rows, columns=headers)
-
-    if df.empty:
-        super().closeEvent(event)
-        return
-
-    event.ignore()
-
-    dialog = SyncDialog(len(df), self)
-
-    async def run_upload():
-        await upload_closed_data(df, lambda cur, total: dialog.update_progress(cur))
-        dialog.finalize()
-
-    asyncio.create_task(run_upload())
-    dialog.exec()
-
-    event.accept()
-    super().closeEvent(event)
-
-
 
 # --- WebSocket feeders ---
 async def publish_binance(cb, status_cb):
@@ -2327,9 +2065,6 @@ async def publish_binance(cb, status_cb):
                     for u in m.get("data", []):
                         if "s" in u and "r" in u:
                             cb("Binance", u["s"], float(u["r"]) * 100)
-        except asyncio.CancelledError:
-            status_cb("Binance", False)
-            break
         except Exception as e:
             # bağlantı koptu → indicator’u mavi yap
             status_cb("Binance", False)
@@ -2364,9 +2099,6 @@ async def publish_okx(cb, status_cb):
                     m = json.loads(raw)
                     for e in m.get("data", []):
                         cb("OKX", e["instId"], float(e["fundingRate"]) * 100)
-        except asyncio.CancelledError:
-            status_cb("Binance", False)
-            break
         except Exception as ex:
             # bağlantı koptu
             status_cb("OKX", False)
@@ -2395,9 +2127,6 @@ async def handle_bybit_batch(syms, cb, status_cb):
                     for d in entries:
                         if "symbol" in d and "fundingRate" in d:
                             cb("Bybit", d["symbol"], float(d["fundingRate"]) * 100)
-        except asyncio.CancelledError:
-            status_cb("Bybit", False)
-            break
         except Exception as e:
             # Mark connection down
             status_cb("Bybit", False)
@@ -2405,14 +2134,12 @@ async def handle_bybit_batch(syms, cb, status_cb):
             await asyncio.sleep(5)
 
 
-async def publish_bybit(cb, status_cb, task_list=None):
+async def publish_bybit(cb, status_cb):
     # fetch all USDT swaps
     syms = await fetch_bybit_swaps()
     # fan out in batches
     for batch in [syms[i:i+BYBIT_BATCH_SIZE] for i in range(0, len(syms), BYBIT_BATCH_SIZE)]:
-        t = asyncio.create_task(handle_bybit_batch(batch, cb, status_cb))
-        if task_list is not None:
-            task_list.append(t)
+        asyncio.create_task(handle_bybit_batch(batch, cb, status_cb))
         await asyncio.sleep(1)
 
 async def handle_bitget_batch(syms, cb, status_cb):
@@ -2429,20 +2156,15 @@ async def handle_bitget_batch(syms, cb, status_cb):
                         for d in data.get("data", []):
                             if "instId" in d and "fundingRate" in d:
                                 cb("Bitget", d["instId"], float(d["fundingRate"]) * 100)
-        except asyncio.CancelledError:
-            status_cb("Bitget", False)
-            break
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget] Error: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
 
-async def publish_bitget(cb, status_cb, task_list=None):
+async def publish_bitget(cb, status_cb):
     syms = await fetch_bitget_swaps()
     for batch in [syms[i:i+50] for i in range(0, len(syms), 50)]:
-        t = asyncio.create_task(handle_bitget_batch(batch, cb, status_cb))
-        if task_list is not None:
-            task_list.append(t)
+        asyncio.create_task(handle_bitget_batch(batch, cb, status_cb))
         await asyncio.sleep(1)
 
 
@@ -2474,10 +2196,7 @@ async def publish_gateio(cb, status_cb):
                         for d in m.get("result", []):
                             if "contract" in d and "funding_rate" in d:
                                 cb("Gateio", d["contract"], float(d["funding_rate"]) * 100)
-        
-        except asyncio.CancelledError:
-            status_cb("Gateio", False)
-            break
+
         except Exception as e:
             # connection down
             status_cb("Gateio", False)
@@ -2496,10 +2215,6 @@ async def publish_binance_askbid(cb, status_cb):
                     msg = json.loads(raw)
                     if msg.get("e") == "bookTicker":
                         cb("Binance", msg["s"], float(msg["b"]), float(msg["a"]))
-        
-        except asyncio.CancelledError:
-            status_cb("Binance", False)
-            break
         except Exception as e:
             status_cb("Binance", False)
             print(f"[Binance AskBid] Error: {e}, reconnecting in 5s")
@@ -2542,10 +2257,6 @@ async def publish_okx_askbid(cb, status_cb):
                             bid_price = float(bids[0][0])
                             ask_price = float(asks[0][0])
                             cb("OKX", instId, bid_price, ask_price)
-        
-        except asyncio.CancelledError:
-            status_cb("OKX", False)
-            break
         except Exception as e:
             status_cb("OKX", False)
             print(f"[OKX AskBid] Error: {e}, reconnect in 5s")
@@ -2582,10 +2293,6 @@ async def publish_bybit_askbid(cb, status_cb):
                         bid_price = float(bids[0][0])
                         ask_price = float(asks[0][0])
                         cb("Bybit", sym, bid_price, ask_price)
-        
-        except asyncio.CancelledError:
-            status_cb("Bybit", False)
-            break
         except Exception as e:
             status_cb("Bybit", False)
             print(f"[Bybit AskBid] Error: {e}, reconnect in 5s")
@@ -2625,10 +2332,7 @@ async def publish_bitget_askbid(cb, status_cb):
                             ask  = d.get("askPr")
                             if inst and bid is not None and ask is not None:
                                 cb("Bitget", inst, float(bid), float(ask))
-        
-        except asyncio.CancelledError:
-            status_cb("Bitget", False)
-            break
+
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget AskBid] Error: {e}, reconnect in 5s")
@@ -2664,10 +2368,6 @@ async def publish_gateio_askbid(cb, status_cb):
                     if m.get("channel") == "futures.book_ticker" and m.get("event") == "update":
                         r = m["result"]
                         cb("Gateio", r["s"], float(r["b"]), float(r["a"]))
-
-        except asyncio.CancelledError:
-            status_cb("Gateio", False)
-            break
         except Exception as e:
             status_cb("Gateio", False)
             print(f"[Gateio AskBid] Error: {e}, reconnecting in 5s")
@@ -2683,6 +2383,7 @@ def main():
     # Splash ekranı (görselin yolunu ayarla)
     pixmap_path = resource_path("splash.png")
     splash_pix = QtGui.QPixmap(pixmap_path)
+    print("Splash is null?", splash_pix.isNull())  # Kontrol için
     splash = QtWidgets.QSplashScreen(splash_pix, QtCore.Qt.WindowStaysOnTopHint)
     splash.setMask(splash_pix.mask())
     splash.show()
@@ -2730,20 +2431,15 @@ def main():
                 window.arb_model.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
 
         # WebSocket’leri sarılmış callback ile başlat
-        window.tasks.extend([
-            loop.create_task(publish_binance(fr_cb, window._update_status_fr)),
-            loop.create_task(publish_okx(fr_cb, window._update_status_fr)),
-            loop.create_task(publish_bybit(fr_cb, window._update_status_fr, window.tasks)),
-            loop.create_task(publish_bitget(fr_cb, window._update_status_fr, window.tasks)),
-            loop.create_task(publish_gateio(fr_cb, window._update_status_fr)),
-        ])
+        loop.create_task(publish_binance (fr_cb, window._update_status_fr))
+        loop.create_task(publish_okx     (fr_cb, window._update_status_fr))
+        loop.create_task(publish_bybit   (fr_cb, window._update_status_fr))
+        loop.create_task(publish_bitget  (fr_cb, window._update_status_fr))
+        loop.create_task(publish_gateio  (fr_cb, window._update_status_fr))
 
     QtCore.QTimer.singleShot(5000, show_main)
 
-    # Ensure the event loop is properly closed when the application exits
-    with loop:
-        loop.run_forever()
+    loop.run_forever()
 
 if __name__ == "__main__":
     main()
-
