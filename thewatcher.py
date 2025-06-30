@@ -1080,6 +1080,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_funding: dict[tuple[str,str], float] = {}
         # Açılan grafik pencerelerini tut
         self.chart_windows: list[ChartWindow] = []
+        # WebSocket tasks started for live feeds
+        self._ws_tasks: list[asyncio.Task] = []
         self._really_closing = False
 
         # Merkezi container ve layout
@@ -1397,11 +1399,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not hasattr(self, "_askbid_task_scheduled"):
             loop = asyncio.get_event_loop()
-            loop.create_task(publish_binance_askbid(self._enqueue_askbid, self._update_status_ab))
-            loop.create_task(publish_okx_askbid(self._enqueue_askbid, self._update_status_ab))
-            loop.create_task(publish_bybit_askbid(self._enqueue_askbid, self._update_status_ab))
-            loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab))
-            loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab))
+            self._ws_tasks.append(loop.create_task(publish_binance_askbid(self._enqueue_askbid, self._update_status_ab)))
+            self._ws_tasks.append(loop.create_task(publish_okx_askbid(self._enqueue_askbid, self._update_status_ab)))
+            self._ws_tasks.append(loop.create_task(publish_bybit_askbid(self._enqueue_askbid, self._update_status_ab)))
+            self._ws_tasks.append(loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab)))
+            self._ws_tasks.append(loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab)))
             self._askbid_task_scheduled = True
 
     # Arbitraj sekmesini aç
@@ -2260,7 +2262,14 @@ class MainWindow(QtWidgets.QMainWindow):
         await self._upload_closed_logs()
         QtWidgets.QMessageBox.information(self, "Bilgi", "Veriler database'e kaydedildi.")
         self._really_closing = True
+        # Cancel running websocket tasks
+        for t in list(self._ws_tasks):
+            t.cancel()
+        if self._ws_tasks:
+            await asyncio.gather(*self._ws_tasks, return_exceptions=True)
+            self._ws_tasks.clear()
         self.close()
+        asyncio.get_event_loop().stop()
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         if getattr(self, "_really_closing", False):
@@ -2357,10 +2366,17 @@ async def handle_bybit_batch(syms, cb, status_cb):
 async def publish_bybit(cb, status_cb):
     # fetch all USDT swaps
     syms = await fetch_bybit_swaps()
-    # fan out in batches
+    tasks = []
     for batch in [syms[i:i+BYBIT_BATCH_SIZE] for i in range(0, len(syms), BYBIT_BATCH_SIZE)]:
-        asyncio.create_task(handle_bybit_batch(batch, cb, status_cb))
+        tasks.append(asyncio.create_task(handle_bybit_batch(batch, cb, status_cb)))
         await asyncio.sleep(1)
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 async def handle_bitget_batch(syms, cb, status_cb):
     sub = {"op":"subscribe", "args":[{"instType":"USDT-FUTURES","channel":"ticker","instId":s} for s in syms]}
@@ -2383,9 +2399,17 @@ async def handle_bitget_batch(syms, cb, status_cb):
 
 async def publish_bitget(cb, status_cb):
     syms = await fetch_bitget_swaps()
+    tasks = []
     for batch in [syms[i:i+50] for i in range(0, len(syms), 50)]:
-        asyncio.create_task(handle_bitget_batch(batch, cb, status_cb))
+        tasks.append(asyncio.create_task(handle_bitget_batch(batch, cb, status_cb)))
         await asyncio.sleep(1)
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def publish_gateio(cb, status_cb):
@@ -2651,11 +2675,11 @@ def main():
                 window.arb_model.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
 
         # WebSocket’leri sarılmış callback ile başlat
-        loop.create_task(publish_binance (fr_cb, window._update_status_fr))
-        loop.create_task(publish_okx     (fr_cb, window._update_status_fr))
-        loop.create_task(publish_bybit   (fr_cb, window._update_status_fr))
-        loop.create_task(publish_bitget  (fr_cb, window._update_status_fr))
-        loop.create_task(publish_gateio  (fr_cb, window._update_status_fr))
+        window._ws_tasks.append(loop.create_task(publish_binance (fr_cb, window._update_status_fr)))
+        window._ws_tasks.append(loop.create_task(publish_okx     (fr_cb, window._update_status_fr)))
+        window._ws_tasks.append(loop.create_task(publish_bybit   (fr_cb, window._update_status_fr)))
+        window._ws_tasks.append(loop.create_task(publish_bitget  (fr_cb, window._update_status_fr)))
+        window._ws_tasks.append(loop.create_task(publish_gateio  (fr_cb, window._update_status_fr)))
 
     QtCore.QTimer.singleShot(5000, show_main)
 
@@ -2663,3 +2687,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    
