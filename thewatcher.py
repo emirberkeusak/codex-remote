@@ -74,6 +74,31 @@ async def _supabase_post(endpoint: str, payload: dict) -> bool:
         async with session.post(url, json=payload, headers=headers) as resp:
             await resp.text()  # drain response
             return resp.status < 400
+        
+
+async def _supabase_get(endpoint: str, params: dict) -> list[dict]:
+    """Send a GET request to Supabase REST endpoint."""
+    url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers, params=params) as resp:
+            if resp.status >= 400:
+                await resp.text()
+                return []
+            return await resp.json()
+
+
+async def fetch_closed_logs(start: str, end: str) -> list[dict]:
+    """Retrieve closed arbitrage logs between given datetimes."""
+    params = [
+        ("start_dt", f"gte.{start}"),
+        ("start_dt", f"lte.{end}"),
+    ]
+    return await _supabase_get("closed_arbitrage_logs", params)
 
 
 
@@ -1094,6 +1119,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_order        = QtWidgets.QPushButton("Ask/Bid - Order Book")
         self.btn_arb          = QtWidgets.QPushButton("Arbitraj Diff")
         self.btn_chart        = QtWidgets.QPushButton("Chart Selection")
+        self.btn_db           = QtWidgets.QPushButton("DB Connection")
 
         # 1) Toggle butonunu oluştur, checkable yap
         self.btn_toggle_theme = QtWidgets.QPushButton("Light Mode")
@@ -1105,6 +1131,7 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_layout.addWidget(self.btn_order)
         btn_layout.addWidget(self.btn_arb)
         btn_layout.addWidget(self.btn_chart)
+        btn_layout.addWidget(self.btn_db)
 
         # 3) Sağa itmek için stretch, ardından toggle butonunu ekle
         btn_layout.addStretch()
@@ -1122,6 +1149,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_order.clicked.connect(self.open_askbid_tab)
         self.btn_arb.clicked.connect(self.open_arbitrage_tab)
         self.btn_chart.clicked.connect(self.open_chart_tab)
+        self.btn_db.clicked.connect(self.open_db_tab)
         
 
 
@@ -1137,6 +1165,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.open_funding_tab()
         self.open_askbid_tab()
         self.open_arbitrage_tab()
+        self.open_db_tab()
 
         # Arbitraj Hesapla butonu
         self.btn_arbitrage_calc.clicked.connect(self.on_arbitrage_calculate)
@@ -1587,6 +1616,34 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.tabs.addTab(page, "Chart Selection")
         self.tabs.setCurrentWidget(page)
+    
+    def open_db_tab(self):
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "DB Connection":
+                self.tabs.setCurrentIndex(i)
+                return
+
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(5, 5, 5, 5)
+
+        form = QtWidgets.QHBoxLayout()
+        self.start_edit = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime())
+        self.start_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.end_edit = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime())
+        self.end_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        form.addWidget(self.start_edit)
+        form.addWidget(self.end_edit)
+        self.btn_download_db = QtWidgets.QPushButton("Verileri İndir")
+        form.addWidget(self.btn_download_db)
+        form.addStretch()
+        layout.addLayout(form)
+        layout.addStretch()
+
+        self.btn_download_db.clicked.connect(lambda: asyncio.create_task(self.on_download_db_data()))
+
+        self.tabs.addTab(page, "DB Connection")
+        self.tabs.setCurrentWidget(page)
 
 
 
@@ -1764,6 +1821,29 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
+
+    async def on_download_db_data(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "CSV Olarak Kaydet",
+            "",
+            "CSV Files (*.csv)"
+        )
+        if not path:
+            return
+
+        start = self.start_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
+        end = self.end_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
+
+        try:
+            records = await fetch_closed_logs(start, end)
+            if not records:
+                QtWidgets.QMessageBox.information(self, "Bilgi", "Veri bulunamadı")
+                return
+            pd.DataFrame(records).to_csv(path, index=False)
+            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Hata", str(e))
 
 
     @QtCore.Slot()
