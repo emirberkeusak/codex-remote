@@ -1629,14 +1629,24 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(5, 5, 5, 5)
 
         form = QtWidgets.QHBoxLayout()
-        self.start_edit = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime())
-        self.start_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.start_edit.setCalendarPopup(True)
-        self.end_edit = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime())
-        self.end_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.end_edit.setCalendarPopup(True)
-        form.addWidget(self.start_edit)
-        form.addWidget(self.end_edit)
+        self.start_date_edit = QtWidgets.QDateEdit(QtCore.QDate.currentDate())
+        self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.start_date_edit.setCalendarPopup(True)
+
+        self.start_time_edit = QtWidgets.QTimeEdit(QtCore.QTime.currentTime())
+        self.start_time_edit.setDisplayFormat("HH:mm:ss")
+
+        self.end_date_edit = QtWidgets.QDateEdit(QtCore.QDate.currentDate())
+        self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.end_date_edit.setCalendarPopup(True)
+
+        self.end_time_edit = QtWidgets.QTimeEdit(QtCore.QTime.currentTime())
+        self.end_time_edit.setDisplayFormat("HH:mm:ss")
+
+        form.addWidget(self.start_date_edit)
+        form.addWidget(self.start_time_edit)
+        form.addWidget(self.end_date_edit)
+        form.addWidget(self.end_time_edit)
         self.btn_download_db = QtWidgets.QPushButton("Verileri İndir")
         form.addWidget(self.btn_download_db)
         form.addStretch()
@@ -1826,8 +1836,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
 
     async def on_download_db_data(self):
-        start_dt = self.start_edit.dateTime()
-        end_dt = self.end_edit.dateTime()
+        start_dt = QtCore.QDateTime(self.start_date_edit.date(), self.start_time_edit.time())
+        end_dt = QtCore.QDateTime(self.end_date_edit.date(), self.end_time_edit.time())
 
         start_str = start_dt.toString("yyyyMMdd_HHmmss")
         end_str = end_dt.toString("yyyyMMdd_HHmmss")
