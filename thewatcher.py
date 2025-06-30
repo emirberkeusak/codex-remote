@@ -51,6 +51,32 @@ FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
 
 
+# Supabase configuration
+SUPABASE_URL = "https://obtqpnfcfmybasnzclqf.supabase.co"
+SUPABASE_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9idHFw"
+    "bmZjZm15YmFzbnpjbHFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNTYzMDYsImV4cCI6MjA2"
+    "NjczMjMwNn0.7XIFyJoBSqV1L-QeMJY14bOfbpGiFqHUTAsqK4e67ao"
+)
+
+
+async def _supabase_post(endpoint: str, payload: dict) -> bool:
+    """Send a POST request to Supabase REST endpoint."""
+    url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            await resp.text()  # drain response
+            return resp.status < 400
+
+
+
 # --- Helper: normalize for subscription endpoints ---
 def normalize_pair(pair: str) -> str:
     s = pair.upper()
@@ -1028,6 +1054,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_funding: dict[tuple[str,str], float] = {}
         # Açılan grafik pencerelerini tut
         self.chart_windows: list[ChartWindow] = []
+        self._really_closing = False
 
         # Merkezi container ve layout
         container = QtWidgets.QWidget(self)
@@ -1627,6 +1654,22 @@ class MainWindow(QtWidgets.QMainWindow):
         name = f"closed_arbitrages_{ts}.xlsx"
         self._export_arbitrage(self.closed_proxy, name)
 
+    def _proxy_to_dataframe(self, proxy) -> pd.DataFrame:
+        headers = [
+            self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
+            for c in range(self.arb_model.columnCount() - 1)
+        ]
+
+        rows = []
+        for r in range(proxy.rowCount()):
+            rec = {}
+            for c in range(proxy.columnCount() - 1):
+                idx = proxy.index(r, c)
+                rec[headers[c]] = proxy.data(idx, QtCore.Qt.DisplayRole)
+            rows.append(rec)
+
+        return pd.DataFrame(rows, columns=headers)
+
 
     def _export_arbitrage(self, proxy, default_name):
         # 1) Dosya yolunu sor
@@ -1641,23 +1684,7 @@ class MainWindow(QtWidgets.QMainWindow):
         
     
 
-        # 2) Başlıkları al
-        headers = [
-            self.arb_model.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
-            for c in range(self.arb_model.columnCount() - 1)
-        ]
-
-        # 3) Proxy üzerinden satırları oku
-        rows = []
-        for r in range(proxy.rowCount()):
-            rec = {}
-            for c in range(proxy.columnCount() - 1):
-                idx = proxy.index(r, c)
-                rec[headers[c]] = proxy.data(idx, QtCore.Qt.DisplayRole)
-            rows.append(rec)
-
-        # 4) DataFrame'e dönüştür ve kaydet
-        df = pd.DataFrame(rows, columns=headers)
+        df = self._proxy_to_dataframe(proxy)
         try:
             df.to_excel(path, index=False)
             QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
@@ -2048,6 +2075,86 @@ class MainWindow(QtWidgets.QMainWindow):
                                     self.arb_model.remove_event(row)
                                 else:
                                     self.arb_model.end_event(row)
+
+
+    async def _upload_closed_logs(self):
+        df = self._proxy_to_dataframe(self.closed_proxy)
+        if df.empty:
+            return
+        progress = QtWidgets.QProgressDialog(
+            "Kapanmış arbitrajlar veritabanına yükleniyor...",
+            None,
+            0,
+            len(df),
+            self,
+        )
+        progress.setWindowTitle("Database Senkronizasyonu")
+        progress.setWindowModality(QtCore.Qt.ApplicationModal)
+        progress.show()
+
+        column_mapping = {
+            "Symbol": "symbol",
+            "Alım Exch": "buy_exch",
+            "Satım Exch": "sell_exch",
+            "Başlangıç Zamanı": "start_dt",
+            "Bitiş Zamanı": "end_dt",
+            "Süre": "duration",
+            "İlk Ask": "initial_ask",
+            "İlk Bid": "initial_bid",
+            "Son Ask": "final_ask",
+            "Son Bid": "final_bid",
+            "Alım FR": "buy_fr",
+            "Satım FR": "sell_fr",
+            "Oran": "rate",
+            "Son Oran": "final_rate",
+            "Tekrar Sayısı": "repeat_count",
+        }
+        df.rename(columns=column_mapping, inplace=True)
+
+        count = 0
+        for _, row in df.iterrows():
+            data = row.to_dict()
+            for field in (
+                "rate",
+                "final_rate",
+                "initial_ask",
+                "initial_bid",
+                "final_ask",
+                "final_bid",
+                "buy_fr",
+                "sell_fr",
+            ):
+                try:
+                    data[field] = float(data[field])
+                except Exception:
+                    data[field] = None
+            try:
+                data["repeat_count"] = int(data["repeat_count"])
+            except Exception:
+                data["repeat_count"] = 0
+            for col in ("start_dt", "end_dt"):
+                if col in data and pd.notna(data[col]):
+                    ts = pd.to_datetime(data[col], format="%d/%m/%Y %H:%M:%S")
+                    data[col] = ts.strftime("%Y-%m-%dT%H:%M:%S")
+            await _supabase_post("closed_arbitrage_logs", data)
+            count += 1
+            progress.setValue(count)
+            await asyncio.sleep(0)
+
+        progress.close()
+
+    async def _handle_close(self):
+        await self._upload_closed_logs()
+        QtWidgets.QMessageBox.information(self, "Bilgi", "Veriler database'e kaydedildi.")
+        self._really_closing = True
+        self.close()
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        if getattr(self, "_really_closing", False):
+            super().closeEvent(event)
+            return
+        event.ignore()
+        asyncio.get_event_loop().create_task(self._handle_close())
 
 
 
