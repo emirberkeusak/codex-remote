@@ -2292,22 +2292,35 @@ class MainWindow(QtWidgets.QMainWindow):
 
         progress.close()
 
-    async def _handle_close(self):
-        await self._upload_closed_logs()
-        QtWidgets.QMessageBox.information(self, "Bilgi", "Veriler database'e kaydedildi.")
+    def _handle_close(self):
+        """Veri senkronizasyonunu başlat, tamamlanınca pencereyi kapat."""
+        if getattr(self, "_really_closing", False):
+            return
+
         self._really_closing = True
-        # Cancel running websocket tasks
-        for t in list(self._ws_tasks):
-            t.cancel()
-        if self._ws_tasks:
-            await asyncio.gather(*self._ws_tasks, return_exceptions=True)
-            self._ws_tasks.clear()
-        self.close()
-        app = QtWidgets.QApplication.instance()
-        if app:
-            app.quit()
-        loop = asyncio.get_event_loop()
-        loop.call_soon(loop.stop)
+
+        # Senkron işlemi başlat
+        def sync_and_exit():
+            # 1. Supabase'e yükle
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._upload_closed_logs())
+            loop.close()
+
+            # 2. Mesaj göster → GUI thread'inde yapılmalı
+            QtCore.QMetaObject.invokeMethod(
+                self, lambda: QtWidgets.QMessageBox.information(self, "Bilgi", "Veriler database'e kaydedildi."),
+                QtCore.Qt.BlockingQueuedConnection
+            )
+
+            # 3. Uygulamayı kapat
+            QtCore.QMetaObject.invokeMethod(self, "close", QtCore.Qt.QueuedConnection)
+            QtCore.QMetaObject.invokeMethod(QtWidgets.QApplication.instance(), "quit", QtCore.Qt.QueuedConnection)
+            os._exit(0)
+
+        # 4. Thread ile başlat
+        import threading
+        threading.Thread(target=sync_and_exit, daemon=True).start()
 
 
     def closeEvent(self, event: QtGui.QCloseEvent):
@@ -2722,7 +2735,15 @@ def main():
 
     QtCore.QTimer.singleShot(5000, show_main)
 
-    loop.run_forever()
+    try:
+        loop.run_forever()
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        loop.stop()
+        loop.close()
+        QtWidgets.QApplication.quit()
+        sys.exit(0)
     
 
 if __name__ == "__main__":
