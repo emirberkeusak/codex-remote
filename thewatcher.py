@@ -2270,6 +2270,7 @@ class MainWindow(QtWidgets.QMainWindow):
         df.rename(columns=column_mapping, inplace=True)
 
         count = 0
+        existing_keys = set()
         for _, row in df.iterrows():
             data = row.to_dict()
             for field in (
@@ -2294,7 +2295,27 @@ class MainWindow(QtWidgets.QMainWindow):
                 if col in data and pd.notna(data[col]):
                     ts = pd.to_datetime(data[col], format="%d/%m/%Y %H:%M:%S")
                     data[col] = ts.strftime("%Y-%m-%dT%H:%M:%S")
-            await _supabase_post("closed_arbitrage_logs", data)
+
+            key = (
+                data.get("symbol"),
+                data.get("buy_exch"),
+                data.get("sell_exch"),
+                data.get("start_dt"),
+                data.get("end_dt"),
+            )
+
+            if key not in existing_keys:
+                existing_keys.add(key)
+                params = {
+                    "symbol": f"eq.{key[0]}",
+                    "buy_exch": f"eq.{key[1]}",
+                    "sell_exch": f"eq.{key[2]}",
+                    "start_dt": f"eq.{key[3]}",
+                    "end_dt": f"eq.{key[4]}",
+                }
+                existing = await _supabase_get("closed_arbitrage_logs", params)
+                if not existing:
+                    await _supabase_post("closed_arbitrage_logs", data)
             count += 1
             progress.setValue(count)
             await asyncio.sleep(0)
