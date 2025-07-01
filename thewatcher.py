@@ -2304,6 +2304,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._ws_tasks.clear()
         self.close()
         QtWidgets.QApplication.quit()
+        asyncio.get_event_loop().stop()
+
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         if getattr(self, "_really_closing", False):
