@@ -1175,6 +1175,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_toggle_theme.setCheckable(True)
         self.btn_toggle_theme.toggled.connect(self.toggle_theme)
 
+        # Senkronizasyon butonu
+        self.btn_sync = QtWidgets.QPushButton("Synchronize")
+        self.btn_sync.clicked.connect(self.on_synchronize)
+
 
         btn_layout.addWidget(self.btn_funding)
         btn_layout.addWidget(self.btn_order)
@@ -1182,8 +1186,9 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_layout.addWidget(self.btn_chart)
         btn_layout.addWidget(self.btn_db)
 
-        # 3) Sağa itmek için stretch, ardından toggle butonunu ekle
+        # 3) Sağa itmek için stretch, ardından sync ve toggle butonlarını ekle
         btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_sync)
         btn_layout.addWidget(self.btn_toggle_theme)
         
 
@@ -1968,6 +1973,10 @@ class MainWindow(QtWidgets.QMainWindow):
             if ev.end_dt is not None:
                 em.remove_event(row)
 
+    @QtCore.Slot()
+    def on_synchronize(self):
+        asyncio.get_event_loop().create_task(self._perform_synchronization())
+
     def export_all_arbitrage(self, mode_name: str):
         """Tüm açık ve kapalı arbitrajları tek dosyaya Excel olarak kaydet."""
         timestamp = datetime.now().strftime("%d%m%Y%H%M%S")
@@ -2292,43 +2301,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
         progress.close()
 
-    def _handle_close(self):
-        """Veri senkronizasyonunu başlat, tamamlanınca pencereyi kapat."""
-        if getattr(self, "_really_closing", False):
-            return
-
-        self._really_closing = True
-
-        # Senkron işlemi başlat
-        def sync_and_exit():
-            # 1. Supabase'e yükle
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._upload_closed_logs())
-            loop.close()
-
-            # 2. Mesaj göster → GUI thread'inde yapılmalı
-            QtCore.QMetaObject.invokeMethod(
-                self, lambda: QtWidgets.QMessageBox.information(self, "Bilgi", "Veriler database'e kaydedildi."),
-                QtCore.Qt.BlockingQueuedConnection
-            )
-
-            # 3. Uygulamayı kapat
-            QtCore.QMetaObject.invokeMethod(self, "close", QtCore.Qt.QueuedConnection)
-            QtCore.QMetaObject.invokeMethod(QtWidgets.QApplication.instance(), "quit", QtCore.Qt.QueuedConnection)
-            os._exit(0)
-
-        # 4. Thread ile başlat
-        import threading
-        threading.Thread(target=sync_and_exit, daemon=True).start()
+    async def _perform_synchronization(self):
+        await self._upload_closed_logs()
+        QtWidgets.QMessageBox.information(
+            self,
+            "Bilgi",
+            "Veri senkronizasyonu başarıyla tamamlandı"
+        )
 
 
     def closeEvent(self, event: QtGui.QCloseEvent):
-        if getattr(self, "_really_closing", False):
-            super().closeEvent(event)
-            return
-        event.ignore()
-        asyncio.get_event_loop().create_task(self._handle_close())
+        self._really_closing = True
+        super().closeEvent(event)
 
 
 
