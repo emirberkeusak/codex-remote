@@ -2303,8 +2303,11 @@ class MainWindow(QtWidgets.QMainWindow):
             await asyncio.gather(*self._ws_tasks, return_exceptions=True)
             self._ws_tasks.clear()
         self.close()
-        QtWidgets.QApplication.quit()
-        asyncio.get_event_loop().stop()
+        app = QtWidgets.QApplication.instance()
+        if app:
+            app.quit()
+        loop = asyncio.get_event_loop()
+        loop.call_soon(loop.stop)
 
 
     def closeEvent(self, event: QtGui.QCloseEvent):
