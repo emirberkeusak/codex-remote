@@ -2720,6 +2720,7 @@ def main():
     QtCore.QTimer.singleShot(5000, show_main)
 
     loop.run_forever()
+    
 
 if __name__ == "__main__":
     main()
