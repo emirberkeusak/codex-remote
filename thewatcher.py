@@ -2302,7 +2302,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._ws_tasks:
             await asyncio.gather(*self._ws_tasks, return_exceptions=True)
             self._ws_tasks.clear()
-        QtWidgets.QApplication.quit()
+        self.close()
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         if getattr(self, "_really_closing", False):
