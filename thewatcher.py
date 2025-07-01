@@ -2303,11 +2303,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     async def _perform_synchronization(self):
         await self._upload_closed_logs()
-        QtWidgets.QMessageBox.information(
+        QtCore.QTimer.singleShot(0, lambda: QtWidgets.QMessageBox.information(
             self,
             "Bilgi",
             "Veri senkronizasyonu başarıyla tamamlandı"
-        )
+        ))
 
 
     def closeEvent(self, event: QtGui.QCloseEvent):
