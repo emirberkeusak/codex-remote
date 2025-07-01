@@ -1060,6 +1060,51 @@ class ChartWindow(QtWidgets.QMainWindow):
                 f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str} | Arbitrage: {arb_str}"
             )
 
+
+# --- Background worker for DB download ---
+class DownloadTask(QtCore.QObject, QtCore.QRunnable):
+    """Run Supabase fetch and Excel export in a separate thread."""
+
+    finished = QtCore.Signal(bool, str)
+
+    def __init__(self, start: str, end: str, path: str):
+        super().__init__()
+        QtCore.QRunnable.__init__(self)
+        self.start = start
+        self.end = end
+        self.path = path
+        self.setAutoDelete(True)
+
+    @QtCore.Slot()
+    def run(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def job():
+            try:
+                recs = await fetch_closed_logs(self.start, self.end)
+                if not recs:
+                    return False, "Veri bulunamadı"
+                df = pd.DataFrame(recs)
+                await asyncio.to_thread(df.to_excel, self.path, index=False)
+                return True, self.path
+            except Exception as e:
+                return False, str(e)
+
+        ok, msg = loop.run_until_complete(job())
+        loop.close()
+        QtCore.QMetaObject.invokeMethod(
+            self,
+            "_emit",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(bool, ok),
+            QtCore.Q_ARG(str, msg),
+        )
+
+    @QtCore.Slot(bool, str)
+    def _emit(self, ok: bool, msg: str):
+        self.finished.emit(ok, msg)
+
 # --- Main Window ---
 class MainWindow(QtWidgets.QMainWindow):
     themeChanged = QtCore.Signal(bool)
@@ -1655,7 +1700,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addLayout(form)
         layout.addStretch()
 
-        self.btn_download_db.clicked.connect(lambda: asyncio.create_task(self.on_download_db_data()))
+        self.btn_download_db.clicked.connect(self.on_download_db_data)
 
         self.tabs.addTab(page, "DB Connection")
         self.tabs.setCurrentWidget(page)
@@ -1837,7 +1882,8 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
 
-    async def on_download_db_data(self):
+    @QtCore.Slot()
+    def on_download_db_data(self):
         start_dt = QtCore.QDateTime(self.start_date_edit.date(), self.start_time_edit.time())
         end_dt = QtCore.QDateTime(self.end_date_edit.date(), self.end_time_edit.time())
 
@@ -1856,29 +1902,16 @@ class MainWindow(QtWidgets.QMainWindow):
         start = start_dt.toString("yyyy-MM-ddTHH:mm:ss")
         end = end_dt.toString("yyyy-MM-ddTHH:mm:ss")
 
-        try:
-            records = await fetch_closed_logs(start, end)
-            if not records:
-                QtWidgets.QMessageBox.information(self, "Bilgi", "Veri bulunamadı")
-                return
+        worker = DownloadTask(start, end, path)
+        worker.finished.connect(self._on_download_finished)
+        QtCore.QThreadPool.globalInstance().start(worker)
 
-            columns = [
-                "symbol", "buy_exch", "sell_exch", "rate",
-                "start_dt", "end_dt", "duration", "final_rate",
-                "initial_ask", "initial_bid", "final_ask", "final_bid",
-                "buy_fr", "sell_fr", "repeat_count",
-            ]
-            df = pd.DataFrame(records)
-            df = df[[c for c in columns if c in df.columns]]
-
-            try:
-                await asyncio.to_thread(df.to_excel, path, index=False)
-                QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "Hata", str(e))
-
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Hata", str(e))
+    @QtCore.Slot(bool, str)
+    def _on_download_finished(self, ok: bool, msg: str):
+        if ok:
+            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{msg}")
+        else:
+            QtWidgets.QMessageBox.critical(self, "Hata", msg)
 
 
     @QtCore.Slot()
@@ -2688,4 +2721,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-    
