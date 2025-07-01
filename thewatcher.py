@@ -1073,7 +1073,7 @@ class DownloadTask(QtCore.QObject, QtCore.QRunnable):
         self.start = start
         self.end = end
         self.path = path
-        self.setAutoDelete(True)
+        self.setAutoDelete(False)
 
     @QtCore.Slot()
     def run(self):
@@ -1104,6 +1104,7 @@ class DownloadTask(QtCore.QObject, QtCore.QRunnable):
     @QtCore.Slot(bool, str)
     def _emit(self, ok: bool, msg: str):
         self.finished.emit(ok, msg)
+        self.deleteLater()
 
 # --- Main Window ---
 class MainWindow(QtWidgets.QMainWindow):
