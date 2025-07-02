@@ -19,6 +19,7 @@ from PySide6.QtCore import Qt
 import qasync
 import random
 import matplotlib
+import pyautogui
 
 
 def resource_path(relative_path):
