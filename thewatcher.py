@@ -1,3 +1,6 @@
+from license_checker import run_license_check
+from PySide6.QtWidgets import QMessageBox
+import sys
 import sys
 import os
 import asyncio
@@ -2677,6 +2680,13 @@ async def publish_gateio_askbid(cb, status_cb):
 # --- Application entrypoint ---
 def main():
     app = QtWidgets.QApplication(sys.argv)
+
+    # 🔐 Lisans kontrolü
+    ok, msg = run_license_check()
+    if not ok:
+        QMessageBox.critical(None, "Lisans Hatası", msg)
+        sys.exit(1)
+
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
 
