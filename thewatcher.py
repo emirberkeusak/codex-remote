@@ -894,11 +894,11 @@ class ChartWindow(QtWidgets.QMainWindow):
             self.bid_series = QtCharts.QLineSeries()
             self.ask_series.setName(f"Ask ({ask_exchange})")
             self.bid_series.setName(f"Bid ({bid_exchange})")
-            ask_pen = QtGui.QPen(QtGui.QColor("blue").lighter(150))
+            ask_pen = QtGui.QPen(QtGui.QColor("red").lighter(150))
             ask_pen.setWidth(3)
             self.ask_series.setPen(ask_pen)
 
-            bid_pen = QtGui.QPen(QtGui.QColor("red").lighter(150))
+            bid_pen = QtGui.QPen(QtGui.QColor("green").lighter(150))
             bid_pen.setWidth(3)
             self.bid_series.setPen(bid_pen)
 
@@ -949,8 +949,9 @@ class ChartWindow(QtWidgets.QMainWindow):
                 fg = QtGui.QColor("black")
 
             self.chart.setBackgroundBrush(bg)
-            self.ask_label.setBrush(QtGui.QBrush(fg))
-            self.bid_label.setBrush(QtGui.QBrush(fg))
+            # Make labels match the series colors for clarity
+            self.ask_label.setBrush(QtGui.QBrush(QtGui.QColor("red").lighter(150)))
+            self.bid_label.setBrush(QtGui.QBrush(QtGui.QColor("green").lighter(150)))
 
         def add_point(self, exchange: str, symbol: str, bid: float, ask: float):
             """Append a bid/ask point if the normalized symbol matches."""
