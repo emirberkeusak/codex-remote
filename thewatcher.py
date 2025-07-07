@@ -95,14 +95,24 @@ async def _supabase_get(endpoint: str, params: dict) -> list[dict]:
             return await resp.json()
 
 
-async def fetch_closed_logs(start: str, end: str, symbols: list[str] | None = None) -> list[dict]:
-    """Retrieve closed arbitrage logs between given datetimes and optional symbols."""
+async def fetch_closed_logs(
+    start: str,
+    end: str,
+    symbols: list[str] | None = None,
+    buy_exchs: list[str] | None = None,
+    sell_exchs: list[str] | None = None,
+) -> list[dict]:
+    """Retrieve closed arbitrage logs filtered by optional symbol and exchanges."""
     params = [
         ("start_dt", f"gte.{start}"),
         ("start_dt", f"lte.{end}"),
     ]
     if symbols:
         params.append(("symbol", f"in.({','.join(symbols)})"))
+    if buy_exchs:
+        params.append(("buy_exch", f"in.({','.join(buy_exchs)})"))
+    if sell_exchs:
+        params.append(("sell_exch", f"in.({','.join(sell_exchs)})"))
     return await _supabase_get("closed_arbitrage_logs", params)
 
 
@@ -110,6 +120,18 @@ async def fetch_db_symbols() -> list[str]:
     """Return unique symbols stored in closed_arbitrage_logs table."""
     recs = await _supabase_get("closed_arbitrage_logs", {"select": "symbol"})
     return sorted({r.get("symbol") for r in recs if r.get("symbol")})
+
+
+async def fetch_db_buy_exchs() -> list[str]:
+    """Return unique buy exchanges stored in closed_arbitrage_logs table."""
+    recs = await _supabase_get("closed_arbitrage_logs", {"select": "buy_exch"})
+    return sorted({r.get("buy_exch") for r in recs if r.get("buy_exch")})
+
+
+async def fetch_db_sell_exchs() -> list[str]:
+    """Return unique sell exchanges stored in closed_arbitrage_logs table."""
+    recs = await _supabase_get("closed_arbitrage_logs", {"select": "sell_exch"})
+    return sorted({r.get("sell_exch") for r in recs if r.get("sell_exch")})
 
 
 
@@ -1096,13 +1118,23 @@ class DownloadTask(QtCore.QObject, QtCore.QRunnable):
 
     finished = QtCore.Signal(bool, str)
 
-    def __init__(self, start: str, end: str, path: str, symbols: list[str] | None = None):
+    def __init__(
+        self,
+        start: str,
+        end: str,
+        path: str,
+        symbols: list[str] | None = None,
+        buy_exchs: list[str] | None = None,
+        sell_exchs: list[str] | None = None,
+    ):
         super().__init__()
         QtCore.QRunnable.__init__(self)
         self.start = start
         self.end = end
         self.path = path
         self.symbols = symbols
+        self.buy_exchs = buy_exchs
+        self.sell_exchs = sell_exchs
         self.setAutoDelete(False)
 
     @QtCore.Slot()
@@ -1112,7 +1144,13 @@ class DownloadTask(QtCore.QObject, QtCore.QRunnable):
 
         async def job():
             try:
-                recs = await fetch_closed_logs(self.start, self.end, self.symbols)
+                recs = await fetch_closed_logs(
+                    self.start,
+                    self.end,
+                    self.symbols,
+                    self.buy_exchs,
+                    self.sell_exchs,
+                )
                 if not recs:
                     return False, "Veri bulunamadı"
                 df = pd.DataFrame(recs)
@@ -1748,6 +1786,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.db_symbol_dropdown = MultiSelectDropdown()
         self.db_symbol_dropdown.selectionChanged.connect(self._update_db_symbol_display)
         form.addWidget(self.db_symbol_dropdown)
+
+        form.addWidget(QtWidgets.QLabel("Buy Exch:"))
+        self.db_buy_label = QtWidgets.QLabel()
+        self.db_buy_label.setMinimumWidth(80)
+        self.db_buy_label.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        form.addWidget(self.db_buy_label)
+
+        self.db_buy_dropdown = MultiSelectDropdown()
+        self.db_buy_dropdown.selectionChanged.connect(self._update_db_buy_display)
+        form.addWidget(self.db_buy_dropdown)
+
+        form.addWidget(QtWidgets.QLabel("Sell Exch:"))
+        self.db_sell_label = QtWidgets.QLabel()
+        self.db_sell_label.setMinimumWidth(80)
+        self.db_sell_label.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        form.addWidget(self.db_sell_label)
+
+        self.db_sell_dropdown = MultiSelectDropdown()
+        self.db_sell_dropdown.selectionChanged.connect(self._update_db_sell_display)
+        form.addWidget(self.db_sell_dropdown)
         
         self.btn_download_db = QtWidgets.QPushButton("Verileri İndir")
         form.addWidget(self.btn_download_db)
@@ -1780,8 +1838,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     async def _refresh_db_symbols(self):
         syms = await fetch_db_symbols()
+        buys = await fetch_db_buy_exchs()
+        sells = await fetch_db_sell_exchs()
         self.db_symbol_dropdown.set_items(syms)
+        self.db_buy_dropdown.set_items(buys)
+        self.db_sell_dropdown.set_items(sells)
         self._update_db_symbol_display(self.db_symbol_dropdown.get_selected_items())
+
+        self._update_db_buy_display(self.db_buy_dropdown.get_selected_items())
+        self._update_db_sell_display(self.db_sell_dropdown.get_selected_items())
 
     def _update_db_symbol_display(self, selected: set[str]):
         total = len(self.db_symbol_dropdown._items)
@@ -1792,6 +1857,26 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             text = f"{len(selected)} selected"
         self.db_symbol_label.setText(text)
+
+    def _update_db_buy_display(self, selected: set[str]):
+        total = len(self.db_buy_dropdown._items)
+        if not selected or len(selected) == total:
+            text = "All"
+        elif len(selected) == 1:
+            text = next(iter(selected))
+        else:
+            text = f"{len(selected)} selected"
+        self.db_buy_label.setText(text)
+
+    def _update_db_sell_display(self, selected: set[str]):
+        total = len(self.db_sell_dropdown._items)
+        if not selected or len(selected) == total:
+            text = "All"
+        elif len(selected) == 1:
+            text = next(iter(selected))
+        else:
+            text = f"{len(selected)} selected"
+        self.db_sell_label.setText(text)
 
     
     def _copy_selection(self, table):
@@ -1975,7 +2060,9 @@ class MainWindow(QtWidgets.QMainWindow):
         end = end_dt.toString("yyyy-MM-ddTHH:mm:ss")
 
         symbols = list(self.db_symbol_dropdown.get_selected_items())
-        worker = DownloadTask(start, end, path, symbols)
+        buys = list(self.db_buy_dropdown.get_selected_items())
+        sells = list(self.db_sell_dropdown.get_selected_items())
+        worker = DownloadTask(start, end, path, symbols, buys, sells)
         worker.finished.connect(self._on_download_finished)
         QtCore.QThreadPool.globalInstance().start(worker)
 
