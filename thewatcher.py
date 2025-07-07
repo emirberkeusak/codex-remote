@@ -1217,17 +1217,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.tabCloseRequested.connect(lambda i: self.tabs.removeTab(i))
         vlayout.addWidget(self.tabs, stretch=1)
 
-        # Açılışta sekmeleri hazırla
-        self.open_funding_tab()
-        self.open_askbid_tab()
-        self.open_arbitrage_tab()
-        self.open_db_tab()
+        # Tabloları önceden hazırla ancak başlangıçta sekme açma
+        self._setup_funding_table()
+        self._setup_askbid_table()
+        self.arb_model = ArbitrajDiffModel()
 
-        # Arbitraj Hesapla butonu
-        self.btn_arbitrage_calc.clicked.connect(self.on_arbitrage_calculate)
+        # Varsayılan arbitraj eşikleri
+        self.arb_threshold = 0.003
+        self.arb_close_threshold = 0.002
 
-        # İlk timer tetiklenmeden önce eşikleri hesapla
-        self.on_arbitrage_calculate()
 
         # Ask/Bid flush timer (~30 Hz)
         self._askbid_data = {}
@@ -1404,7 +1402,8 @@ class MainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(0,0,0,0)
 
-        self._setup_funding_table()
+        if not hasattr(self, "table"):
+            self._setup_funding_table()
         # Export butonunu tutacak yatay "top" layout'u
         top = QtWidgets.QHBoxLayout()
         self.btn_export_funding = QtWidgets.QPushButton("Excel'e Aktar")
@@ -1431,7 +1430,8 @@ class MainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(0,0,0,0)
 
-        self._setup_askbid_table()
+        if not hasattr(self, "askbid_table"):
+            self._setup_askbid_table()
 
         top = QtWidgets.QHBoxLayout()
         self.btn_export_askbid = QtWidgets.QPushButton("Excel'e Aktar")
@@ -1527,8 +1527,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.duration_mode_switcher.toggled.connect(self.on_switch_duration_mode)
         
 
-        # Ortak model
-        self.arb_model = ArbitrajDiffModel()
+        # Ortak model (önceden oluşturulmadıysa)
+        if not hasattr(self, "arb_model"):
+            self.arb_model = ArbitrajDiffModel()
 
         # Açık Arbitrajlar Tablosu
         open_box = QtWidgets.QGroupBox("Açık Arbitrajlar")
