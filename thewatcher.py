@@ -1391,6 +1391,18 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_askbid_dropdown(self, symbols: list[str]):
         self.askbid_dropdown.set_items(symbols)
 
+    def start_askbid_feeds(self):
+        """Launch ask/bid WebSocket tasks if not already running."""
+        if getattr(self, "_askbid_task_scheduled", False):
+            return
+        loop = asyncio.get_event_loop()
+        self._ws_tasks.append(loop.create_task(publish_binance_askbid(self._enqueue_askbid, self._update_status_ab)))
+        self._ws_tasks.append(loop.create_task(publish_okx_askbid(self._enqueue_askbid, self._update_status_ab)))
+        self._ws_tasks.append(loop.create_task(publish_bybit_askbid(self._enqueue_askbid, self._update_status_ab)))
+        self._ws_tasks.append(loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab)))
+        self._ws_tasks.append(loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab)))
+        self._askbid_task_scheduled = True
+
     # Funding sekmesini aç
     def open_funding_tab(self):
         for idx in range(self.tabs.count()):
@@ -1450,14 +1462,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(page, "Ask/Bid - Order Book")
         self.tabs.setCurrentWidget(page)
 
-        if not hasattr(self, "_askbid_task_scheduled"):
-            loop = asyncio.get_event_loop()
-            self._ws_tasks.append(loop.create_task(publish_binance_askbid(self._enqueue_askbid, self._update_status_ab)))
-            self._ws_tasks.append(loop.create_task(publish_okx_askbid(self._enqueue_askbid, self._update_status_ab)))
-            self._ws_tasks.append(loop.create_task(publish_bybit_askbid(self._enqueue_askbid, self._update_status_ab)))
-            self._ws_tasks.append(loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab)))
-            self._ws_tasks.append(loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab)))
-            self._askbid_task_scheduled = True
+        # Ensure feeds are running but don't start multiple times
+        self.start_askbid_feeds()
 
     # Arbitraj sekmesini aç
     def open_arbitrage_tab(self):
@@ -2747,6 +2753,9 @@ def main():
         window._ws_tasks.append(loop.create_task(publish_bybit   (fr_cb, window._update_status_fr)))
         window._ws_tasks.append(loop.create_task(publish_bitget  (fr_cb, window._update_status_fr)))
         window._ws_tasks.append(loop.create_task(publish_gateio  (fr_cb, window._update_status_fr)))
+
+        # Start ask/bid feeds immediately but keep the tab closed
+        window.start_askbid_feeds()
 
     QtCore.QTimer.singleShot(5000, show_main)
 
