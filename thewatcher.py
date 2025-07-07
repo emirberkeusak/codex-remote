@@ -894,11 +894,11 @@ class ChartWindow(QtWidgets.QMainWindow):
             self.bid_series = QtCharts.QLineSeries()
             self.ask_series.setName(f"Ask ({ask_exchange})")
             self.bid_series.setName(f"Bid ({bid_exchange})")
-            ask_pen = QtGui.QPen(QtGui.QColor("red"))
+            ask_pen = QtGui.QPen(QtGui.QColor(255, 0, 0))  # Parlak kırmızı
             ask_pen.setWidth(3)
             self.ask_series.setPen(ask_pen)
 
-            bid_pen = QtGui.QPen(QtGui.QColor("green"))
+            bid_pen = QtGui.QPen(QtGui.QColor(0, 255, 0))  # Parlak yeşil
             bid_pen.setWidth(3)
             self.bid_series.setPen(bid_pen)
 
@@ -938,6 +938,15 @@ class ChartWindow(QtWidgets.QMainWindow):
 
             self.apply_theme(dark_mode)
 
+            # Tema uygulandıktan sonra tekrar kalem renklerini ayarla
+            ask_pen = QtGui.QPen(QtGui.QColor(255, 0, 0))  # Parlak kırmızı
+            ask_pen.setWidth(3)
+            self.ask_series.setPen(ask_pen)
+
+            bid_pen = QtGui.QPen(QtGui.QColor(0, 255, 0))  # Parlak yeşil
+            bid_pen.setWidth(3)
+            self.bid_series.setPen(bid_pen)
+
         def apply_theme(self, dark_mode: bool):
             if dark_mode:
                 self.chart.setTheme(QtCharts.QChart.ChartThemeDark)
@@ -949,9 +958,18 @@ class ChartWindow(QtWidgets.QMainWindow):
                 fg = QtGui.QColor("black")
 
             self.chart.setBackgroundBrush(bg)
-            # Make labels match the series colors for clarity
-            self.ask_label.setBrush(QtGui.QBrush(QtGui.QColor("red")))
-            self.bid_label.setBrush(QtGui.QBrush(QtGui.QColor("green")))
+            # Label renklerini ayarla
+            self.ask_label.setBrush(QtGui.QBrush(QtGui.QColor(255, 0, 0)))
+            self.bid_label.setBrush(QtGui.QBrush(QtGui.QColor(0, 255, 0)))
+
+            # Çizgi renklerini sabitle
+            ask_pen = QtGui.QPen(QtGui.QColor(255, 0, 0))
+            ask_pen.setWidth(3)
+            self.ask_series.setPen(ask_pen)
+
+            bid_pen = QtGui.QPen(QtGui.QColor(0, 255, 0))
+            bid_pen.setWidth(3)
+            self.bid_series.setPen(bid_pen)
 
         def add_point(self, exchange: str, symbol: str, bid: float, ask: float):
             """Append a bid/ask point if the normalized symbol matches."""
