@@ -95,13 +95,21 @@ async def _supabase_get(endpoint: str, params: dict) -> list[dict]:
             return await resp.json()
 
 
-async def fetch_closed_logs(start: str, end: str) -> list[dict]:
-    """Retrieve closed arbitrage logs between given datetimes."""
+async def fetch_closed_logs(start: str, end: str, symbols: list[str] | None = None) -> list[dict]:
+    """Retrieve closed arbitrage logs between given datetimes and optional symbols."""
     params = [
         ("start_dt", f"gte.{start}"),
         ("start_dt", f"lte.{end}"),
     ]
+    if symbols:
+        params.append(("symbol", f"in.({','.join(symbols)})"))
     return await _supabase_get("closed_arbitrage_logs", params)
+
+
+async def fetch_db_symbols() -> list[str]:
+    """Return unique symbols stored in closed_arbitrage_logs table."""
+    recs = await _supabase_get("closed_arbitrage_logs", {"select": "symbol"})
+    return sorted({r.get("symbol") for r in recs if r.get("symbol")})
 
 
 
@@ -1088,12 +1096,13 @@ class DownloadTask(QtCore.QObject, QtCore.QRunnable):
 
     finished = QtCore.Signal(bool, str)
 
-    def __init__(self, start: str, end: str, path: str):
+    def __init__(self, start: str, end: str, path: str, symbols: list[str] | None = None):
         super().__init__()
         QtCore.QRunnable.__init__(self)
         self.start = start
         self.end = end
         self.path = path
+        self.symbols = symbols
         self.setAutoDelete(False)
 
     @QtCore.Slot()
@@ -1103,7 +1112,7 @@ class DownloadTask(QtCore.QObject, QtCore.QRunnable):
 
         async def job():
             try:
-                recs = await fetch_closed_logs(self.start, self.end)
+                recs = await fetch_closed_logs(self.start, self.end, self.symbols)
                 if not recs:
                     return False, "Veri bulunamadı"
                 df = pd.DataFrame(recs)
@@ -1703,6 +1712,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for i in range(self.tabs.count()):
             if self.tabs.tabText(i) == "DB Connection":
                 self.tabs.setCurrentIndex(i)
+                asyncio.get_event_loop().create_task(self._refresh_db_symbols())
                 return
 
         page = QtWidgets.QWidget()
@@ -1728,6 +1738,10 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addWidget(self.start_time_edit)
         form.addWidget(self.end_date_edit)
         form.addWidget(self.end_time_edit)
+
+        self.db_symbol_dropdown = MultiSelectDropdown()
+        form.addWidget(self.db_symbol_dropdown)
+        
         self.btn_download_db = QtWidgets.QPushButton("Verileri İndir")
         form.addWidget(self.btn_download_db)
         form.addStretch()
@@ -1738,6 +1752,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.tabs.addTab(page, "DB Connection")
         self.tabs.setCurrentWidget(page)
+
+        asyncio.get_event_loop().create_task(self._refresh_db_symbols())
 
 
 
@@ -1754,6 +1770,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # (İsteğe bağlı) Modeli tamamen resetleyip yeniden çiz
         # self.arb_model.beginResetModel()
         # self.arb_model.endResetModel()
+
+    async def _refresh_db_symbols(self):
+        syms = await fetch_db_symbols()
+        self.db_symbol_dropdown.set_items(syms)
 
     
     def _copy_selection(self, table):
@@ -1936,7 +1956,8 @@ class MainWindow(QtWidgets.QMainWindow):
         start = start_dt.toString("yyyy-MM-ddTHH:mm:ss")
         end = end_dt.toString("yyyy-MM-ddTHH:mm:ss")
 
-        worker = DownloadTask(start, end, path)
+        symbols = list(self.db_symbol_dropdown.get_selected_items())
+        worker = DownloadTask(start, end, path, symbols)
         worker.finished.connect(self._on_download_finished)
         QtCore.QThreadPool.globalInstance().start(worker)
 
@@ -2357,6 +2378,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Bilgi",
             "Veri senkronizasyonu başarıyla tamamlandı"
         ))
+        asyncio.get_event_loop().create_task(self._refresh_db_symbols())
 
 
     def closeEvent(self, event: QtGui.QCloseEvent):
