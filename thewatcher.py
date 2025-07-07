@@ -1739,10 +1739,16 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addWidget(self.end_date_edit)
         form.addWidget(self.end_time_edit)
 
+        form.addWidget(QtWidgets.QLabel("Symbol:"))
+        self.db_symbol_label = QtWidgets.QLabel()
+        self.db_symbol_label.setMinimumWidth(100)
+        self.db_symbol_label.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        form.addWidget(self.db_symbol_label)
+
         self.db_symbol_dropdown = MultiSelectDropdown()
+        self.db_symbol_dropdown.selectionChanged.connect(self._update_db_symbol_display)
         form.addWidget(self.db_symbol_dropdown)
         
-        form.addWidget(QtWidgets.QLabel("Symbol:"))
         self.btn_download_db = QtWidgets.QPushButton("Verileri İndir")
         form.addWidget(self.btn_download_db)
         form.addStretch()
@@ -1775,6 +1781,17 @@ class MainWindow(QtWidgets.QMainWindow):
     async def _refresh_db_symbols(self):
         syms = await fetch_db_symbols()
         self.db_symbol_dropdown.set_items(syms)
+        self._update_db_symbol_display(self.db_symbol_dropdown.get_selected_items())
+
+    def _update_db_symbol_display(self, selected: set[str]):
+        total = len(self.db_symbol_dropdown._items)
+        if not selected or len(selected) == total:
+            text = "All"
+        elif len(selected) == 1:
+            text = next(iter(selected))
+        else:
+            text = f"{len(selected)} selected"
+        self.db_symbol_label.setText(text)
 
     
     def _copy_selection(self, table):
