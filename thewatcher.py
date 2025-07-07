@@ -1758,6 +1758,8 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(5, 5, 5, 5)
 
         form = QtWidgets.QHBoxLayout()
+
+
         self.start_date_edit = QtWidgets.QDateEdit(QtCore.QDate.currentDate())
         self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
         self.start_date_edit.setCalendarPopup(True)
@@ -2422,6 +2424,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Tekrar Sayısı": "repeat_count",
         }
         df.rename(columns=column_mapping, inplace=True)
+        
 
         count = 0
         existing_keys = set()
