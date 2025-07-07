@@ -1742,6 +1742,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.db_symbol_dropdown = MultiSelectDropdown()
         form.addWidget(self.db_symbol_dropdown)
         
+        form.addWidget(QtWidgets.QLabel("Symbol:"))
         self.btn_download_db = QtWidgets.QPushButton("Verileri İndir")
         form.addWidget(self.btn_download_db)
         form.addStretch()
