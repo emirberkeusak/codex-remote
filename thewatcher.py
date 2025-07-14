@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 from typing import Dict
 
 # === Telegram Ayarları ===
-BOT_TOKEN = "7792505913:AAHTwyArHFbeafOe_p6iaJ1AJlX1WIDPqHM"
-CHAT_ID = -1002790107785
+BOT_TOKEN = "7613430563:AAEqMG-x78220EXm9jOuVcMr4jC5LAOPGfM"
+CHAT_ID = -4640610190
 THREAD_ID = None
 USE_THREAD = False
 BASE_SEND_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -22,6 +22,7 @@ last_update_id = 0
 is_bot_active = True
 movement_task = None
 ALERT_STATUS: Dict[str, Dict[str, int]] = {}
+MOVEMENT_CHAIN: Dict[str, Dict[str, float]] = {}
 
 local_tz = ZoneInfo("Europe/Tirane")  # Tirana saat dilimi
 
@@ -71,6 +72,24 @@ async def send_movement(symbol, pct_change, open_price, close_price, open_time, 
     )
     await send_telegram_message(msg)
 
+# === Zincir Güncelleme Bildirimi ===
+async def send_chain_alert(symbol: str, start_price: float, current_price: float, start_time: int, pct_change: float):
+    """Zincir takibi sırasında fiyat her %1 hareket ettiğinde bildirim gönder."""
+    emoji = "🟢" if pct_change > 0 else "🔴"
+    direction = "YÜKSELİŞ" if pct_change > 0 else "DÜŞÜŞ"
+    pct_str = f"{pct_change:+.2f}%"
+
+    start_dt = datetime.fromtimestamp(start_time / 1000, tz=local_tz).strftime("%d/%m/%Y %H:%M:%S")
+
+    msg = (
+        f"{symbol.upper()} ZİNCİR\n\n"
+        f"{emoji} {direction} ({pct_str})\n\n"
+        f"Zincir Başlangıcı: {start_dt}\n"
+        f"Başlangıç Fiyatı: {start_price:.4f}\n"
+        f"Güncel Fiyat: {current_price:.4f}"
+    )
+    await send_telegram_message(msg)
+
 # === Kline Hareket Analizi ===
 async def evaluate_kline_movement():
     global is_bot_active
@@ -106,6 +125,12 @@ async def evaluate_kline_movement():
                             if abs(pct) >= 3 and (now_ts - status["3"] > EVAL_INTERVAL):
                                 await send_movement(symbol, pct, open_price, close_price, open_time, close_time)
                                 status["3"] = now_ts
+                                if symbol not in MOVEMENT_CHAIN:
+                                    MOVEMENT_CHAIN[symbol] = {
+                                        "start_price": open_price,
+                                        "start_time": close_time,
+                                        "last_alert_price": close_price,
+                                    }
 
                             if abs(pct) >= 5 and (now_ts - status["5"] > EVAL_INTERVAL):
                                 await send_movement(symbol, pct, open_price, close_price, open_time, close_time)
@@ -116,6 +141,22 @@ async def evaluate_kline_movement():
                                 if new_level > status["10+"]:
                                     await send_movement(symbol, pct, open_price, close_price, open_time, close_time)
                                     status["10+"] = new_level
+
+                            if symbol in MOVEMENT_CHAIN:
+                                chain = MOVEMENT_CHAIN[symbol]
+                                diff_total = ((close_price - chain["start_price"]) / chain["start_price"]) * 100
+                                now_ts = int(datetime.now().timestamp())  # Zaman damgası al
+                                if diff_total <= -2:
+                                    MOVEMENT_CHAIN.pop(symbol, None)
+                                    ALERT_STATUS[symbol] = {"3": -1, "5": -1, "10+": 0}  # reset
+                                else:
+                                    diff_last = ((close_price - chain["last_alert_price"]) / chain["last_alert_price"]) * 100
+                                    last_alert_ts = chain.get("last_alert_ts", 0)
+                                    if abs(diff_last) >= 1 and (now_ts - last_alert_ts >= 120):  # 2 dk filtresi
+                                        await send_chain_alert(symbol, chain["start_price"], close_price, chain["start_time"], diff_total)
+                                        chain["last_alert_price"] = close_price
+                                        chain["last_alert_ts"] = now_ts  # Son zincir uyarı zamanı güncelle
+                                        MOVEMENT_CHAIN[symbol] = chain
 
                             if abs(pct) < 3:
                                 ALERT_STATUS[symbol] = {"3": -1, "5": -1, "10+": 0}
