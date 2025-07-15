@@ -45,6 +45,13 @@ BITGET_REST_CONTRACTS  = "https://api.bitget.com/api/v2/mix/market/contracts"
 GATEIO_WS_URL          = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 GATEIO_REST_TICKERS    = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
 
+# REST endpoints for next funding times
+BINANCE_REST_FUNDING   = "https://fapi.binance.com/fapi/v1/premiumIndex"
+OKX_REST_FUNDING       = "https://www.okx.com/api/v5/public/funding-rate"
+BYBIT_REST_FUNDING     = "https://api.bybit.com/v5/market/tickers"
+BITGET_REST_FUNDING    = "https://api.bitget.com/api/v2/mix/market/ticker"
+GATEIO_REST_FUNDING    = "https://api.gateio.ws/api/v4/futures/usdt/contracts"
+
 
 BYBIT_BATCH_SIZE     = 50
 BYBIT_OPEN_TIMEOUT   = 30
@@ -161,6 +168,19 @@ def normalize_symbol(sym: str) -> str | None:
     # keep only alphanumeric
     s = re.sub(r'[^A-Z0-9]', '', s)
     return s or None
+
+def to_exchange_symbol(exchange: str, ui_symbol: str) -> str:
+    """Convert UI symbol like BTCUSDT to exchange specific format."""
+    s = ui_symbol.upper()
+    if exchange == "OKX":
+        if s.endswith("USDT"):
+            base = s[:-4]
+            return f"{base}-USDT-SWAP"
+    elif exchange == "Gateio":
+        if s.endswith("USDT"):
+            base = s[:-4]
+            return f"{base}_USDT"
+    return s
 
 
 # --- Flash Delegate for red/green animation ---
@@ -608,6 +628,77 @@ async def fetch_gateio_swaps() -> list[str]:
         if isinstance(e.get("contract"), str)
     ]
 
+# --- REST helpers for next funding time ---
+async def fetch_binance_next_time(symbol: str) -> int | None:
+    async with aiohttp.ClientSession() as s:
+        r = await s.get(BINANCE_REST_FUNDING, params={"symbol": symbol})
+        j = await r.json()
+    if isinstance(j, list) and j:
+        j = j[0]
+    ts = j.get("nextFundingTime") if isinstance(j, dict) else None
+    return int(ts) // 1000 if ts else None
+
+
+async def fetch_okx_next_time(symbol: str) -> int | None:
+    inst = to_exchange_symbol("OKX", symbol)
+    async with aiohttp.ClientSession() as s:
+        r = await s.get(OKX_REST_FUNDING, params={"instId": inst})
+        j = await r.json()
+    data = (j.get("data") or []) if isinstance(j, dict) else []
+    for d in data:
+        if d.get("instId") == inst:
+            ts = d.get("nextFundingTime") or d.get("fundingTime")
+            return int(ts) // 1000 if ts else None
+    return None
+
+
+async def fetch_bybit_next_time(symbol: str) -> int | None:
+    async with aiohttp.ClientSession() as s:
+        r = await s.get(BYBIT_REST_FUNDING, params={"category": "linear", "symbol": symbol})
+        j = await r.json()
+    data = (j.get("result", {}).get("list") or []) if isinstance(j, dict) else []
+    for d in data:
+        if d.get("symbol") == symbol:
+            ts = d.get("nextFundingTime")
+            return int(ts) // 1000 if ts else None
+    return None
+
+
+async def fetch_bitget_next_time(symbol: str) -> int | None:
+    async with aiohttp.ClientSession() as s:
+        r = await s.get(BITGET_REST_FUNDING, params={"symbol": symbol, "productType": "USDT-FUTURES"})
+        j = await r.json()
+    d = (j.get("data") or {}) if isinstance(j, dict) else {}
+    ts = d.get("nextFundingTime") or d.get("fundingTime")
+    return int(ts) // 1000 if ts else None
+
+
+async def fetch_gateio_next_time(symbol: str) -> int | None:
+    inst = to_exchange_symbol("Gateio", symbol)
+    url = f"{GATEIO_REST_FUNDING}/{inst}"
+    async with aiohttp.ClientSession() as s:
+        r = await s.get(url)
+        j = await r.json()
+    ts = j.get("next_funding_time") or j.get("funding_time") if isinstance(j, dict) else None
+    if isinstance(ts, str) and ts.isdigit():
+        ts = int(ts)
+    return int(ts) // 1000 if isinstance(ts, (int, float)) else None
+
+
+async def fetch_next_funding_time(exchange: str, symbol: str) -> int | None:
+    if exchange == "Binance":
+        return await fetch_binance_next_time(symbol)
+    if exchange == "OKX":
+        return await fetch_okx_next_time(symbol)
+    if exchange == "Bybit":
+        return await fetch_bybit_next_time(symbol)
+    if exchange == "Bitget":
+        return await fetch_bitget_next_time(symbol)
+    if exchange == "Gateio":
+        return await fetch_gateio_next_time(symbol)
+    return None
+
+
 
 # --- Qt Table Model ---
 class FundingTableModel(QtCore.QAbstractTableModel):
@@ -618,17 +709,21 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         self._symbols  = []                     # list of normalized symbols
         self._data     = {}                     # symbol -> {exchange: str}
         self._previous = {}                     # (symbol,exchange) -> float (rounded to 4dp)
+        self._times    = {}                     # symbol -> {exchange: next_ts}
         self.delegate  = None
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._symbols)
 
     def columnCount(self, parent=QtCore.QModelIndex()):
-        return 1 + len(EXCHANGES)
+        return 1 + 2 * len(EXCHANGES)
 
     def headerData(self, section, orientation, role):
         if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
-            return "Symbol" if section == 0 else EXCHANGES[section-1]
+            if section == 0:
+                return "Symbol"
+            exch = EXCHANGES[(section-1)//2]
+            return f"{exch} FR" if (section-1)%2==0 else f"{exch} Countdown"
         return None
 
     def data(self, index, role=QtCore.Qt.DisplayRole):
@@ -638,8 +733,43 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         sym = self._symbols[r]
         if c == 0:
             return sym
-        exch = EXCHANGES[c-1]
-        return self._data.get(sym, {}).get(exch, "")
+        exch = EXCHANGES[(c-1)//2]
+        if (c-1)%2 == 0:
+            return self._data.get(sym, {}).get(exch, "")
+        ts = self._times.get(sym, {}).get(exch)
+        if ts is None:
+            return ""
+        rem = max(0, int(ts - time.time()))
+        h, m = divmod(rem, 3600)
+        m, s = divmod(m, 60)
+        return f"{h:02}:{m:02}:{s:02}"
+
+    @QtCore.Slot(str, str, int)
+    def update_time(self, exchange: str, raw_symbol: str, next_ts: int):
+        sym = normalize_symbol(raw_symbol)
+        if not sym:
+            return
+
+        if sym not in self._data:
+            self.beginInsertRows(QtCore.QModelIndex(), len(self._symbols), len(self._symbols))
+            self._symbols.append(sym)
+            self._data[sym] = {}
+            self._times[sym] = {}
+            self.endInsertRows()
+            self.symbolsUpdated.emit(self._symbols.copy())
+
+        self._times.setdefault(sym, {})[exchange] = next_ts
+        row = self._symbols.index(sym)
+        col = 2 * EXCHANGES.index(exchange) + 2
+        idx = self.index(row, col)
+        self.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
+
+    def tick(self):
+        if not self._symbols:
+            return
+        tl = self.index(0, 0)
+        br = self.index(len(self._symbols)-1, self.columnCount()-1)
+        self.dataChanged.emit(tl, br, [QtCore.Qt.DisplayRole])
 
     @QtCore.Slot(str, str, float)
     def update_rate(self, exchange: str, raw_symbol: str, rate_pct: float):
@@ -666,6 +796,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
                                  len(self._symbols))
             self._symbols.append(sym)
             self._data[sym] = {}
+            self._times[sym] = {}
             self.endInsertRows()
             
             # Emit signal for new symbol
@@ -674,7 +805,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         # update value
         self._data[sym][exchange] = rate_str
         row = self._symbols.index(sym)
-        col = EXCHANGES.index(exchange) + 1
+        col = 1 + 2 * EXCHANGES.index(exchange)
         src_idx = self.index(row, col)
         # update the source model cell
         self.dataChanged.emit(src_idx, src_idx, [QtCore.Qt.DisplayRole])
@@ -1192,6 +1323,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._arb_map = {}
         # Her exchange’in en son funding‐rate’ini saklayacak dict
         self.current_funding: dict[tuple[str,str], float] = {}
+        # Next funding timestamps
+        self.next_funding: dict[tuple[str,str], int] = {}
+        self._pending_next: set[tuple[str,str]] = set()
         # Açılan grafik pencerelerini tut
         self.chart_windows: list[ChartWindow] = []
         # WebSocket tasks started for live feeds
@@ -1304,6 +1438,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._arb_timer.timeout.connect(self.process_arbitrage)
         self._arb_timer.start(500)
 
+        # Countdown update timer
+        self._count_timer = QtCore.QTimer(self)
+        self._count_timer.timeout.connect(self._on_countdown_timer)
+        self._count_timer.start(1000)
+
         # Başlangıç teması
         self.toggle_theme(self.btn_toggle_theme.isChecked())
 
@@ -1322,6 +1461,23 @@ class MainWindow(QtWidgets.QMainWindow):
             color = "lightgreen" if connected else "darkred"
             text_color = "black" if connected else "white"
             lbl.setStyleSheet(f"background-color: {color}; color: {text_color}; border: 1px solid gray;")
+
+    
+    def _on_countdown_timer(self):
+        self.model.tick()
+        now = time.time()
+        for key, ts in list(self.next_funding.items()):
+            if ts <= now and key not in self._pending_next:
+                self._pending_next.add(key)
+                exch, sym = key
+                asyncio.get_event_loop().create_task(self._refresh_funding_time(exch, sym))
+
+    async def _refresh_funding_time(self, exchange: str, symbol: str):
+        ts = await fetch_next_funding_time(exchange, symbol)
+        if ts:
+            self.next_funding[(exchange, symbol)] = ts
+            self.model.update_time(exchange, symbol, ts)
+        self._pending_next.discard((exchange, symbol))
 
     
     def toggle_theme(self, checked: bool):
@@ -2873,6 +3029,11 @@ def main():
 
             # 3) current_funding sözlüğünü güncelle
             window.current_funding[(exchange, norm_sym)] = rate_pct
+
+            if (exchange, norm_sym) not in window.next_funding:
+                asyncio.get_event_loop().create_task(
+                    window._refresh_funding_time(exchange, norm_sym)
+                )
 
             # 4) açık arbitraj fırsatlarını (end_dt is None) tara
             for ev in window.arb_model.events:
