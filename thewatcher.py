@@ -648,10 +648,25 @@ async def fetch_binance_next_time(symbol: str) -> int | None:
     async with aiohttp.ClientSession() as s:
         r = await s.get(BINANCE_REST_FUNDING, params={"symbol": symbol})
         j = await r.json()
-    if isinstance(j, list) and j:
-        j = j[0]
-    ts = j.get("nextFundingTime") if isinstance(j, dict) else None
-    return int(ts) // 1000 if ts else None
+    if isinstance(j, list):
+        # some symbols may return a list; search matching entry
+        for e in j:
+            if isinstance(e, dict) and e.get("symbol") == symbol:
+                ts = e.get("nextFundingTime")
+                return int(ts) // 1000 if ts else None
+        if j:
+            j = j[0]
+        else:
+            return None
+    if isinstance(j, dict):
+        ts = j.get("nextFundingTime")
+        if not ts and isinstance(j.get("data"), list):
+            for e in j["data"]:
+                if e.get("symbol") == symbol:
+                    ts = e.get("nextFundingTime") or e.get("fundingTime")
+                    break
+        return int(ts) // 1000 if ts else None
+    return None
 
 
 async def fetch_okx_next_time(symbol: str) -> int | None:
@@ -683,7 +698,20 @@ async def fetch_bitget_next_time(symbol: str) -> int | None:
     async with aiohttp.ClientSession() as s:
         r = await s.get(BITGET_REST_FUNDING, params={"symbol": symbol, "productType": "USDT-FUTURES"})
         j = await r.json()
-    d = (j.get("data") or {}) if isinstance(j, dict) else {}
+    d = {}
+    if isinstance(j, dict):
+        data = j.get("data")
+        if isinstance(data, list):
+            for e in data:
+                if isinstance(e, dict) and (
+                    e.get("symbol") == symbol or e.get("instId") == symbol
+                ):
+                    d = e
+                    break
+            if not d and data:
+                d = data[0]
+        elif isinstance(data, dict):
+            d = data
     ts = d.get("nextFundingTime") or d.get("fundingTime")
     return int(ts) // 1000 if ts else None
 
@@ -694,10 +722,17 @@ async def fetch_gateio_next_time(symbol: str) -> int | None:
     async with aiohttp.ClientSession() as s:
         r = await s.get(url)
         j = await r.json()
-    ts = j.get("next_funding_time") or j.get("funding_time") if isinstance(j, dict) else None
-    if isinstance(ts, str) and ts.isdigit():
-        ts = int(ts)
-    return int(ts) // 1000 if isinstance(ts, (int, float)) else None
+    if isinstance(j, list):
+        if j:
+            j = j[0]
+        else:
+            return None
+    if isinstance(j, dict):
+        ts = j.get("next_funding_time") or j.get("funding_time")
+        if isinstance(ts, str) and ts.isdigit():
+            ts = int(ts)
+        return int(ts) // 1000 if isinstance(ts, (int, float)) else None
+    return None
 
 
 async def fetch_next_funding_time(exchange: str, symbol: str) -> int | None:
@@ -1505,7 +1540,7 @@ class MainWindow(QtWidgets.QMainWindow):
         async with sem:
             self._last_funding_call[exchange] = time.time()
             ts = await fetch_next_funding_time(exchange, symbol)
-            
+
         if ts:
             self.next_funding[(exchange, symbol)] = ts
             self.model.update_time(exchange, symbol, ts)
