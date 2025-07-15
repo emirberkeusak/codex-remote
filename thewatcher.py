@@ -1,7 +1,6 @@
 from license_checker import run_license_check
 from PySide6.QtWidgets import QMessageBox
 import sys
-import sys
 import os
 import asyncio
 import json
@@ -20,8 +19,7 @@ from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QV
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 from PySide6.QtCore import Qt
 import qasync
-import random
-import matplotlib
+
 
 def resource_path(relative_path):
     """EXE içinden splash.png yolunu çözer"""
@@ -2298,7 +2296,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
             if now_ms >= ts:
                 raw = self.model._raw_map.get(sym, sym)
-                asyncio.get_event_loop().create_task(
+                # Schedule fetch within the running event loop
+                asyncio.get_running_loop().create_task(
                     self._fetch_and_set_next(raw)
                 )
                 continue
