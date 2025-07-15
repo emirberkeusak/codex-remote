@@ -615,20 +615,31 @@ class FundingTableModel(QtCore.QAbstractTableModel):
     
     def __init__(self):
         super().__init__()
-        self._symbols  = []                     # list of normalized symbols
-        self._data     = {}                     # symbol -> {exchange: str}
-        self._previous = {}                     # (symbol,exchange) -> float (rounded to 4dp)
-        self.delegate  = None
+        self._symbols     = []                     # list of normalized symbols
+        self._data        = {}                     # symbol -> {exchange: str}
+        self._previous    = {}                     # (symbol,exchange) -> float (rounded to 4dp)
+        self._next_times  = {}                     # symbol -> next funding timestamp (ms)
+        self._raw_map     = {}                     # normalized symbol -> last Binance raw symbol
+        self.delegate     = None
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._symbols)
 
     def columnCount(self, parent=QtCore.QModelIndex()):
-        return 1 + len(EXCHANGES)
+        # Extra column for Binance countdown
+        return 1 + len(EXCHANGES) + 1
+
 
     def headerData(self, section, orientation, role):
         if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
-            return "Symbol" if section == 0 else EXCHANGES[section-1]
+            if section == 0:
+                return "Symbol"
+            if section == 1:
+                return "Binance"
+            if section == 2:
+                return "Binance Countdown"
+            # sections after the countdown correspond to the remaining exchanges
+            return EXCHANGES[section-2]
         return None
 
     def data(self, index, role=QtCore.Qt.DisplayRole):
@@ -638,7 +649,18 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         sym = self._symbols[r]
         if c == 0:
             return sym
-        exch = EXCHANGES[c-1]
+        if c == 1:
+            return self._data.get(sym, {}).get("Binance", "")
+        if c == 2:
+            ts = self._next_times.get(sym)
+            if not ts:
+                return ""
+            remaining = max(0, ts - int(time.time() * 1000)) // 1000
+            h = remaining // 3600
+            m = (remaining % 3600) // 60
+            s = remaining % 60
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        exch = EXCHANGES[c-2]
         return self._data.get(sym, {}).get(exch, "")
 
     @QtCore.Slot(str, str, float)
@@ -666,6 +688,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
                                  len(self._symbols))
             self._symbols.append(sym)
             self._data[sym] = {}
+            self._next_times[sym] = None
             self.endInsertRows()
             
             # Emit signal for new symbol
@@ -673,8 +696,11 @@ class FundingTableModel(QtCore.QAbstractTableModel):
 
         # update value
         self._data[sym][exchange] = rate_str
+        if exchange == "Binance":
+            self._raw_map[sym] = raw_symbol
         row = self._symbols.index(sym)
-        col = EXCHANGES.index(exchange) + 1
+        exch_idx = EXCHANGES.index(exchange)
+        col = 1 if exch_idx == 0 else exch_idx + 2
         src_idx = self.index(row, col)
         # update the source model cell
         self.dataChanged.emit(src_idx, src_idx, [QtCore.Qt.DisplayRole])
@@ -685,6 +711,16 @@ class FundingTableModel(QtCore.QAbstractTableModel):
             proxy = view.model()
             view_idx = proxy.mapFromSource(src_idx)
             self.delegate.mark_changed(view_idx, positive)
+
+    @QtCore.Slot(str, int)
+    def update_next_funding(self, symbol: str, next_ts: int):
+        """Store next funding timestamp (ms) for symbol and refresh cell."""
+        if symbol not in self._symbols:
+            return
+        self._next_times[symbol] = next_ts
+        row = self._symbols.index(symbol)
+        idx = self.index(row, 2)
+        self.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
 
 
 class AskBidTableModel(QtCore.QAbstractTableModel):
@@ -1303,6 +1339,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._arb_timer = QtCore.QTimer(self)
         self._arb_timer.timeout.connect(self.process_arbitrage)
         self._arb_timer.start(500)
+
+        # Countdown refresh timer (1s)
+        self._countdown_timer = QtCore.QTimer(self)
+        self._countdown_timer.timeout.connect(self._refresh_countdowns)
+        self._countdown_timer.start(1000)
 
         # Başlangıç teması
         self.toggle_theme(self.btn_toggle_theme.isChecked())
@@ -2246,6 +2287,36 @@ class MainWindow(QtWidgets.QMainWindow):
                 for win in list(self.chart_windows):
                     win.add_point(exchange, symbol, bid, ask)
         self._askbid_data.clear()
+    
+    def _refresh_countdowns(self):
+        if not hasattr(self, "model"):
+            return
+        now_ms = int(time.time() * 1000)
+        for sym in self.model._symbols:
+            ts = self.model._next_times.get(sym)
+            if ts is None:
+                continue
+            if now_ms >= ts:
+                raw = self.model._raw_map.get(sym, sym)
+                asyncio.get_event_loop().create_task(
+                    self._fetch_and_set_next(raw)
+                )
+                continue
+            row = self.model._symbols.index(sym)
+            idx = self.model.index(row, 2)
+            self.model.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
+
+    async def _fetch_and_set_next(self, symbol: str):
+        url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+        async with aiohttp.ClientSession() as session:
+            try:
+                resp = await session.get(url, params={"symbol": symbol})
+                data = await resp.json()
+                ts = data.get("nextFundingTime")
+                if ts is not None:
+                    self.model.update_next_funding(normalize_symbol(symbol), int(ts))
+            except Exception:
+                pass
 
     @QtCore.Slot()
     @QtCore.Slot(QtCore.QModelIndex)
@@ -2873,6 +2944,11 @@ def main():
 
             # 3) current_funding sözlüğünü güncelle
             window.current_funding[(exchange, norm_sym)] = rate_pct
+
+            if exchange == "Binance":
+                asyncio.get_event_loop().create_task(
+                    window._fetch_and_set_next(raw_symbol)
+                )
 
             # 4) açık arbitraj fırsatlarını (end_dt is None) tara
             for ev in window.arb_model.events:
