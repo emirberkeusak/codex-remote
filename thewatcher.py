@@ -56,6 +56,7 @@ GATEIO_REST_FUNDING    = "https://api.gateio.ws/api/v4/futures/usdt/contracts"
 BYBIT_BATCH_SIZE     = 50
 BYBIT_OPEN_TIMEOUT   = 30
 BYBIT_CLOSE_TIMEOUT  = 10
+GATEIO_BATCH_SIZE    = 50
 
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
@@ -1377,9 +1378,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.next_funding: dict[tuple[str,str], int] = {}
         self._pending_next: set[tuple[str,str]] = set()
         # Rate limit helpers for next funding REST calls
-        self._funding_semaphores = {ex: asyncio.Semaphore(1) for ex in EXCHANGES}
-        self._last_funding_call: dict[str, float] = {}
-        self.FUNDING_CALL_INTERVAL = 1.0
+        self.MAX_FUNDING_CONCURRENCY = 5
+        self._funding_semaphores = {
+            ex: asyncio.Semaphore(self.MAX_FUNDING_CONCURRENCY) for ex in EXCHANGES
+        }
         # Açılan grafik pencerelerini tut
         self.chart_windows: list[ChartWindow] = []
         # WebSocket tasks started for live feeds
@@ -2868,26 +2870,19 @@ async def publish_bitget(cb, status_cb):
         raise
 
 
-async def publish_gateio(cb, status_cb):
-    """
-    Fetch Gate.io USDT‐margined futures funding‐rate updates,
-    and notify status via status_cb(exchange, connected: bool).
-    """
-    # 1) get list of USDT contracts
-    syms = await fetch_gateio_swaps()
+async def handle_gateio_batch(syms, cb, status_cb):
     sub = {
         "time": int(time.time()),
         "channel": "futures.tickers",
         "event": "subscribe",
-        "payload": syms
+        "payload": syms,
     }
-
     while True:
         try:
             async with websockets.connect(GATEIO_WS_URL, ping_interval=20, ping_timeout=10) as ws:
                 # connection up
                 status_cb("Gateio", True)
-                print("[Gateio] Connected")
+                print(f"[Gateio] Batch {len(syms)} connected")
                 await ws.send(json.dumps(sub))
 
                 async for raw in ws:
@@ -2902,6 +2897,24 @@ async def publish_gateio(cb, status_cb):
             status_cb("Gateio", False)
             print(f"[Gateio] Error: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
+
+async def publish_gateio(cb, status_cb):
+    """
+    Fetch Gate.io USDT‐margined futures funding‐rate updates and
+    notify status via status_cb(exchange, connected: bool).
+    """
+    syms = await fetch_gateio_swaps()
+    tasks = []
+    for batch in [syms[i:i+GATEIO_BATCH_SIZE] for i in range(0, len(syms), GATEIO_BATCH_SIZE)]:
+        tasks.append(asyncio.create_task(handle_gateio_batch(batch, cb, status_cb)))
+        await asyncio.sleep(1)
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def publish_binance_askbid(cb, status_cb):
