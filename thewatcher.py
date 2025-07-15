@@ -170,16 +170,31 @@ def normalize_symbol(sym: str) -> str | None:
     return s or None
 
 def to_exchange_symbol(exchange: str, ui_symbol: str) -> str:
-    """Convert UI symbol like BTCUSDT to exchange specific format."""
+    """Convert UI symbol like BTCUSDT to exchange specific format.
+
+    Raises
+    ------
+    ValueError
+        If ``ui_symbol`` does not conform to the expected ``<BASE>USDT``
+        format when ``exchange`` requires a specific mapping.
+    """
+     
     s = ui_symbol.upper()
+    # symbol must be like "BTCUSDT" (letters/digits only) for supported exchanges
+    valid_usdt = bool(re.fullmatch(r"[A-Z0-9]+USDT", s))
     if exchange == "OKX":
-        if s.endswith("USDT"):
-            base = s[:-4]
-            return f"{base}-USDT-SWAP"
+        if not valid_usdt:
+            raise ValueError(f"Geçersiz sembol: {ui_symbol}")
+        base = s[:-4]
+        return f"{base}-USDT-SWAP"
     elif exchange == "Gateio":
-        if s.endswith("USDT"):
-            base = s[:-4]
-            return f"{base}_USDT"
+        if not valid_usdt:
+            raise ValueError(f"Geçersiz sembol: {ui_symbol}")
+        base = s[:-4]
+        return f"{base}_USDT"
+
+    if not valid_usdt:
+        raise ValueError(f"Geçersiz sembol: {ui_symbol}")
     return s
 
 
@@ -1326,6 +1341,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # Next funding timestamps
         self.next_funding: dict[tuple[str,str], int] = {}
         self._pending_next: set[tuple[str,str]] = set()
+        # Rate limit helpers for next funding REST calls
+        self._funding_semaphores = {ex: asyncio.Semaphore(1) for ex in EXCHANGES}
+        self._last_funding_call: dict[str, float] = {}
+        self.FUNDING_CALL_INTERVAL = 1.0
         # Açılan grafik pencerelerini tut
         self.chart_windows: list[ChartWindow] = []
         # WebSocket tasks started for live feeds
@@ -1473,7 +1492,20 @@ class MainWindow(QtWidgets.QMainWindow):
                 asyncio.get_event_loop().create_task(self._refresh_funding_time(exch, sym))
 
     async def _refresh_funding_time(self, exchange: str, symbol: str):
-        ts = await fetch_next_funding_time(exchange, symbol)
+        sem = self._funding_semaphores.get(exchange)
+        if sem is None:
+            sem = asyncio.Semaphore(1)
+            self._funding_semaphores[exchange] = sem
+
+        last = self._last_funding_call.get(exchange, 0.0)
+        wait = (last + self.FUNDING_CALL_INTERVAL) - time.time()
+        if wait > 0:
+            await asyncio.sleep(wait)
+
+        async with sem:
+            self._last_funding_call[exchange] = time.time()
+            ts = await fetch_next_funding_time(exchange, symbol)
+            
         if ts:
             self.next_funding[(exchange, symbol)] = ts
             self.model.update_time(exchange, symbol, ts)
@@ -2646,7 +2678,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def closeEvent(self, event: QtGui.QCloseEvent):
+        """Gracefully shutdown running tasks before closing the window."""
+        event.ignore()
+        asyncio.get_event_loop().create_task(self._async_close(event))
+
+    async def _async_close(self, event: QtGui.QCloseEvent):
         self._really_closing = True
+
+        # Stop active timers
+        for t in (self._count_timer, self._askbid_timer, self._arb_timer):
+            if t.isActive():
+                t.stop()
+
+        # Cancel running websocket tasks and wait for them
+        for task in self._ws_tasks:
+            task.cancel()
+
+        if self._ws_tasks:
+            await asyncio.gather(*self._ws_tasks, return_exceptions=True)
+
         super().closeEvent(event)
 
 
