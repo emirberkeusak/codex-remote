@@ -2289,21 +2289,28 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_countdowns(self):
         if not hasattr(self, "model"):
             return
+        
         now_ms = int(time.time() * 1000)
+        fetch_list = []
+
+        # Hangi sembollerin süresinin dolduğunu topla
         for sym in self.model._symbols:
             ts = self.model._next_times.get(sym)
             if ts is None:
                 continue
             if now_ms >= ts:
-                raw = self.model._raw_map.get(sym, sym)
-                # Schedule fetch within the running event loop
-                asyncio.get_running_loop().create_task(
-                    self._fetch_and_set_next(raw)
-                )
-                continue
-            row = self.model._symbols.index(sym)
-            idx = self.model.index(row, 2)
-            self.model.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
+                fetch_list.append(self.model._raw_map.get(sym, sym))
+
+        # Yeni funding zamanlarını asenkron al
+        loop = asyncio.get_running_loop()
+        for raw in fetch_list:
+            loop.create_task(self._fetch_and_set_next(raw))
+
+        # Countdown değerlerini yenilemek için tek bir sinyal gönder
+        if self.model._symbols:
+            top_left = self.model.index(0, 2)
+            bottom_right = self.model.index(len(self.model._symbols)-1, 2)
+            self.model.dataChanged.emit(top_left, bottom_right, [QtCore.Qt.DisplayRole])
 
     async def _fetch_and_set_next(self, symbol: str):
         url = "https://fapi.binance.com/fapi/v1/premiumIndex"
