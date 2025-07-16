@@ -168,7 +168,7 @@ class FlashDelegate(QtWidgets.QStyledItemDelegate):
         self._flash_cells: dict[tuple[int,int], tuple[float,bool]] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_timeout)
-        self._timer.start(50)
+        self._timer.start(100)
         self.enabled = True
 
     def setEnabled(self, enabled: bool):
@@ -1130,21 +1130,6 @@ class ChartWindow(QtWidgets.QMainWindow):
             )
 
             self.chart.update()
-
-            title_ask = f"{self._ask_price}" if self._ask_price is not None else "-"
-            title_bid = f"{self._bid_price}" if self._bid_price is not None else "-"
-            if self._ask_price is not None and self._bid_price not in (None, 0):
-                spread = self._ask_price / self._bid_price - 1
-                spread_str = f"{spread:.5f}"
-                arb = self._bid_price / self._ask_price - 1 - (FEE_RATE_BUY + FEE_RATE_SELL)
-                arb_str = f"{arb:.5f}"
-            else:
-                spread_str = "-"
-                arb_str = "-"
-            self.chart.setTitle(
-                f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str} | Arbitrage: {arb_str}"
-            )
-
 
 # --- Background worker for DB download ---
 class DownloadTask(QtCore.QObject, QtCore.QRunnable):
@@ -2562,7 +2547,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     await _supabase_post("closed_arbitrage_logs", data)
             count += 1
             progress.setValue(count)
-            await asyncio.sleep(0)
+            if count % 100 == 0:
+                await asyncio.sleep(0)
 
         progress.close()
 
@@ -2578,6 +2564,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         self._really_closing = True
+
+        # Stop background timers
+        self._askbid_timer.stop()
+        self._arb_timer.stop()
+        self._countdown_timer.stop()
+
+        # Cancel running WebSocket tasks
+        tasks = list(self._ws_tasks)
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            asyncio.get_event_loop().create_task(
+                asyncio.gather(*tasks, return_exceptions=True)
+            )
+
         super().closeEvent(event)
 
 
