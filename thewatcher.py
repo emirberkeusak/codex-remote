@@ -40,6 +40,7 @@ FUNDING_COLUMNS = [
     "Binance",
     "Binance Countdown",
     "OKX",
+    "OKX Countdown",
     "Bybit",
     "Bitget",
     "Gateio",
@@ -687,7 +688,8 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         self._symbols  = []                     # list of normalized symbols
         self._data     = {}                     # symbol -> {exchange: str}
         self._previous = {}                     # (symbol,exchange) -> float (rounded to 4dp)
-        self._next_funding_ts: dict[str, float] = {}
+        # (symbol, exchange) -> next funding timestamp
+        self._next_funding_ts: dict[tuple[str, str], float] = {}
         self.delegate  = None
 
         # timer for countdown updates
@@ -714,8 +716,9 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         column_name = FUNDING_COLUMNS[c]
         if column_name == "Symbol":
             return sym
-        if column_name == "Binance Countdown":
-            ts = self._next_funding_ts.get(sym)
+        if column_name.endswith("Countdown"):
+            exch = column_name.split()[0]
+            ts = self._next_funding_ts.get((sym, exch))
             if ts is None:
                 return ""
             delta = int(ts - time.time())
@@ -765,10 +768,10 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         # update the source model cell
         self.dataChanged.emit(src_idx, src_idx, [QtCore.Qt.DisplayRole])
 
-        # store next funding timestamp for Binance and update countdown cell
-        if exchange == "Binance" and next_ts is not None:
-            self._next_funding_ts[sym] = next_ts
-            c_col = FUNDING_COLUMNS.index("Binance Countdown")
+        # store next funding timestamp for supported exchanges and update countdown
+        if next_ts is not None and f"{exchange} Countdown" in FUNDING_COLUMNS:
+            self._next_funding_ts[(sym, exchange)] = next_ts
+            c_col = FUNDING_COLUMNS.index(f"{exchange} Countdown")
             c_idx = self.index(row, c_col)
             self.dataChanged.emit(c_idx, c_idx, [QtCore.Qt.DisplayRole])
 
@@ -781,10 +784,15 @@ class FundingTableModel(QtCore.QAbstractTableModel):
 
     def _update_countdowns(self):
         col = FUNDING_COLUMNS.index("Binance Countdown")
-        for row, sym in enumerate(self._symbols):
-            if sym in self._next_funding_ts:
-                idx = self.index(row, col)
-                self.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
+        for exch in ("Binance", "OKX"):
+            col_name = f"{exch} Countdown"
+            if col_name not in FUNDING_COLUMNS:
+                continue
+            col = FUNDING_COLUMNS.index(col_name)
+            for row, sym in enumerate(self._symbols):
+                if (sym, exch) in self._next_funding_ts:
+                    idx = self.index(row, col)
+                    self.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
 
 
 class AskBidTableModel(QtCore.QAbstractTableModel):
@@ -2778,7 +2786,19 @@ async def publish_okx(cb, status_cb):
                 async for raw in ws:
                     m = json.loads(raw)
                     for e in m.get("data", []):
-                        cb("OKX", e["instId"], float(e["fundingRate"]) * 100, None)
+                        next_ts = None
+                        nft = e.get("nextFundingTime")
+                        if nft is not None:
+                            try:
+                                next_ts = int(nft) / 1000
+                            except (TypeError, ValueError):
+                                next_ts = None
+                        cb(
+                            "OKX",
+                            e["instId"],
+                            float(e["fundingRate"]) * 100,
+                            next_ts,
+                        )
         except Exception as ex:
             # bağlantı koptu
             status_cb("OKX", False)
