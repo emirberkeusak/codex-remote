@@ -2787,7 +2787,7 @@ async def publish_okx(cb, status_cb):
                     m = json.loads(raw)
                     for e in m.get("data", []):
                         next_ts = None
-                        nft = e.get("nextFundingTime")
+                        nft = e.get("fundingTime")
                         if nft is not None:
                             try:
                                 next_ts = int(nft) / 1000
