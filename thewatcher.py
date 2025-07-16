@@ -2010,6 +2010,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # self.arb_model.endResetModel()
 
     async def _refresh_db_symbols(self):
+        if not (
+            hasattr(self, "db_symbol_dropdown")
+            and hasattr(self, "db_buy_dropdown")
+            and hasattr(self, "db_sell_dropdown")
+        ):
+            return
+
         syms = await fetch_db_symbols()
         buys = await fetch_db_buy_exchs()
         sells = await fetch_db_sell_exchs()
@@ -2635,7 +2642,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "Bilgi",
             "Veri senkronizasyonu başarıyla tamamlandı"
         ))
-        asyncio.get_event_loop().create_task(self._refresh_db_symbols())
+        if hasattr(self, "db_symbol_dropdown"):
+            asyncio.get_event_loop().create_task(self._refresh_db_symbols())
 
 
     def closeEvent(self, event: QtGui.QCloseEvent):
