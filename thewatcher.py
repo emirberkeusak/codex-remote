@@ -1230,6 +1230,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart_windows: list[ChartWindow] = []
         # WebSocket tasks started for live feeds
         self._ws_tasks: list[asyncio.Task] = []
+        # Symbols currently fetching next funding time
+        self._fetching_next: set[str] = set()
         self._really_closing = False
 
         # Merkezi container ve layout
@@ -2291,19 +2293,21 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         
         now_ms = int(time.time() * 1000)
-        fetch_list = []
+        fetch_list: list[tuple[str, str]] = []
 
         # Hangi sembollerin süresinin dolduğunu topla
         for sym in self.model._symbols:
             ts = self.model._next_times.get(sym)
             if ts is None:
                 continue
-            if now_ms >= ts:
-                fetch_list.append(self.model._raw_map.get(sym, sym))
+            if now_ms >= ts and sym not in self._fetching_next:
+                raw_sym = self.model._raw_map.get(sym, sym)
+                fetch_list.append((raw_sym, sym))
+                self._fetching_next.add(sym)
 
         # Yeni funding zamanlarını asenkron al
         loop = asyncio.get_running_loop()
-        for raw in fetch_list:
+        for raw, norm in fetch_list:
             loop.create_task(self._fetch_and_set_next(raw))
 
         # Countdown değerlerini yenilemek için tek bir sinyal gönder
@@ -2314,15 +2318,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     async def _fetch_and_set_next(self, symbol: str):
         url = "https://fapi.binance.com/fapi/v1/premiumIndex"
-        async with aiohttp.ClientSession() as session:
-            try:
+        norm = normalize_symbol(symbol)
+        if norm is None:
+            return
+        try:
+            async with aiohttp.ClientSession() as session:
                 resp = await session.get(url, params={"symbol": symbol})
                 data = await resp.json()
                 ts = data.get("nextFundingTime")
                 if ts is not None:
-                    self.model.update_next_funding(normalize_symbol(symbol), int(ts))
-            except Exception:
-                pass
+                    self.model.update_next_funding(norm, int(ts))
+        except Exception:
+            pass
+        finally:
+            self._fetching_next.discard(norm)
+                    
 
     @QtCore.Slot()
     @QtCore.Slot(QtCore.QModelIndex)
@@ -2952,9 +2962,11 @@ def main():
             window.current_funding[(exchange, norm_sym)] = rate_pct
 
             if exchange == "Binance":
-                asyncio.get_event_loop().create_task(
-                    window._fetch_and_set_next(raw_symbol)
-                )
+                if norm_sym not in window._fetching_next:
+                    window._fetching_next.add(norm_sym)
+                    asyncio.get_event_loop().create_task(
+                        window._fetch_and_set_next(raw_symbol)
+                    )
 
             # 4) açık arbitraj fırsatlarını (end_dt is None) tara
             for ev in window.arb_model.events:
