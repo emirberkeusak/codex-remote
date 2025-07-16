@@ -1103,7 +1103,12 @@ class ChartWindow(QtWidgets.QMainWindow):
                 if x > self.axis_x.max().toMSecsSinceEpoch():
                     self.axis_x.setMax(ts)
 
-                    # Drop points that scrolled out of the visible window
+            # Maintain a rolling time window on the X axis
+            start_ms = x - self.window_ms
+            if start_ms < self._start_ms:
+                start_ms = self._start_ms
+
+            # Drop points that scrolled out of the visible window
             for series in (self.ask_series, self.bid_series):
                 pts = series.pointsVector()
                 remove_count = 0
@@ -1115,10 +1120,6 @@ class ChartWindow(QtWidgets.QMainWindow):
                 if remove_count:
                     series.removePoints(0, remove_count)
 
-            # Maintain a rolling time window on the X axis
-            start_ms = x - self.window_ms
-            if start_ms < self._start_ms:
-                start_ms = self._start_ms
             self.axis_x.setMin(QtCore.QDateTime.fromMSecsSinceEpoch(start_ms))
 
             # Scale around the most recent price
