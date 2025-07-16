@@ -109,9 +109,19 @@ async def _supabase_post(
     headers["Prefer"] = ",".join(prefer)
 
     session = await _get_supabase_session()
-    async with session.post(url, json=payload, headers=headers) as resp:
-        await resp.text()  # drain response
-        return resp.status < 400
+    try:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                print(
+                    f"Supabase POST {endpoint} failed: {resp.status} {text}",
+                    file=sys.stderr,
+                )
+                return False
+            return True
+    except aiohttp.ClientError as e:
+        print(f"Supabase POST {endpoint} exception: {e}", file=sys.stderr)
+        return False
         
 
 async def _supabase_get(endpoint: str, params: dict) -> list[dict]:
@@ -2622,20 +2632,36 @@ class MainWindow(QtWidgets.QMainWindow):
             progress.setValue(count)
             await asyncio.sleep(0)
 
-        ok = True
-        if records:
+        if not records:
+            progress.close()
+            return True
+
+        progress.setLabelText("Veriler g\u00f6nderiliyor...")
+        progress.setMaximum(len(records))
+        progress.setValue(0)
+
+        batch_size = 500
+        sent = 0
+        while sent < len(records):
+            batch = records[sent:sent + batch_size]
             ok = await _supabase_post(
                 "closed_arbitrage_logs",
-                records,
+                batch,
                 params={
                     "on_conflict": "symbol,buy_exch,sell_exch,start_dt,end_dt"
                 },
                 ignore_duplicates=True,
             )
-        progress.setValue(len(df))
+            if not ok:
+                print(f"Batch starting at {sent} failed", file=sys.stderr)
+                progress.close()
+                return False
+            sent += len(batch)
+            progress.setValue(sent)
+            await asyncio.sleep(0)
 
         progress.close()
-        return ok
+        return True
 
     async def _perform_synchronization(self):
         ok = await self._upload_closed_logs()
