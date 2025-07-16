@@ -1484,6 +1484,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_funding      = QtWidgets.QPushButton("Funding Rate Live")
         self.btn_order        = QtWidgets.QPushButton("Ask/Bid - Order Book")
         self.btn_arb          = QtWidgets.QPushButton("Arbitraj Diff")
+        self.btn_fr_diff      = QtWidgets.QPushButton("Funding Rate Diff")
         self.btn_chart        = QtWidgets.QPushButton("Chart Selection")
         self.btn_db           = QtWidgets.QPushButton("DB Connection")
 
@@ -1500,6 +1501,7 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_layout.addWidget(self.btn_funding)
         btn_layout.addWidget(self.btn_order)
         btn_layout.addWidget(self.btn_arb)
+        btn_layout.addWidget(self.btn_fr_diff)
         btn_layout.addWidget(self.btn_chart)
         btn_layout.addWidget(self.btn_db)
 
@@ -1519,6 +1521,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_funding.clicked.connect(self.open_funding_tab)
         self.btn_order.clicked.connect(self.open_askbid_tab)
         self.btn_arb.clicked.connect(self.open_arbitrage_tab)
+        self.btn_fr_diff.clicked.connect(self.open_funding_rate_diff_tab)
         self.btn_chart.clicked.connect(self.open_chart_tab)
         self.btn_db.clicked.connect(self.open_db_tab)
         
@@ -1936,6 +1939,21 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_export_closed.clicked.connect(self.on_export_closed_excel)
 
         btn_clear_closed.clicked.connect(self.on_clear_closed)
+
+        # Funding Rate Diff sekmesi
+    def open_funding_rate_diff_tab(self):
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "Funding Rate Diff":
+                self.tabs.setCurrentIndex(i)
+                return
+
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.addStretch()
+
+        self.tabs.addTab(page, "Funding Rate Diff")
+        self.tabs.setCurrentWidget(page)
 
         # Yeni grafik sekmesi
     def open_chart_tab(self):
