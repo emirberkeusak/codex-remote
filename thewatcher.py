@@ -1,6 +1,7 @@
 from license_checker import run_license_check
 from PySide6.QtWidgets import QMessageBox
 import sys
+import sys
 import os
 import asyncio
 import json
@@ -19,7 +20,8 @@ from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QV
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 from PySide6.QtCore import Qt
 import qasync
-
+import random
+import matplotlib
 
 def resource_path(relative_path):
     """EXE içinden splash.png yolunu çözer"""
@@ -168,8 +170,7 @@ class FlashDelegate(QtWidgets.QStyledItemDelegate):
         self._flash_cells: dict[tuple[int,int], tuple[float,bool]] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_timeout)
-        self._timer.setTimerType(QtCore.Qt.CoarseTimer)
-        self._timer.start(150)
+        self._timer.start(50)
         self.enabled = True
 
     def setEnabled(self, enabled: bool):
@@ -614,31 +615,20 @@ class FundingTableModel(QtCore.QAbstractTableModel):
     
     def __init__(self):
         super().__init__()
-        self._symbols     = []                     # list of normalized symbols
-        self._data        = {}                     # symbol -> {exchange: str}
-        self._previous    = {}                     # (symbol,exchange) -> float (rounded to 4dp)
-        self._next_times  = {}                     # symbol -> next funding timestamp (ms)
-        self._raw_map     = {}                     # normalized symbol -> last Binance raw symbol
-        self.delegate     = None
+        self._symbols  = []                     # list of normalized symbols
+        self._data     = {}                     # symbol -> {exchange: str}
+        self._previous = {}                     # (symbol,exchange) -> float (rounded to 4dp)
+        self.delegate  = None
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._symbols)
 
     def columnCount(self, parent=QtCore.QModelIndex()):
-        # Extra column for Binance countdown
-        return 1 + len(EXCHANGES) + 1
-
+        return 1 + len(EXCHANGES)
 
     def headerData(self, section, orientation, role):
         if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
-            if section == 0:
-                return "Symbol"
-            if section == 1:
-                return "Binance"
-            if section == 2:
-                return "Binance Countdown"
-            # sections after the countdown correspond to the remaining exchanges
-            return EXCHANGES[section-2]
+            return "Symbol" if section == 0 else EXCHANGES[section-1]
         return None
 
     def data(self, index, role=QtCore.Qt.DisplayRole):
@@ -648,18 +638,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         sym = self._symbols[r]
         if c == 0:
             return sym
-        if c == 1:
-            return self._data.get(sym, {}).get("Binance", "")
-        if c == 2:
-            ts = self._next_times.get(sym)
-            if not ts:
-                return ""
-            remaining = max(0, ts - int(time.time() * 1000)) // 1000
-            h = remaining // 3600
-            m = (remaining % 3600) // 60
-            s = remaining % 60
-            return f"{h:02d}:{m:02d}:{s:02d}"
-        exch = EXCHANGES[c-2]
+        exch = EXCHANGES[c-1]
         return self._data.get(sym, {}).get(exch, "")
 
     @QtCore.Slot(str, str, float)
@@ -687,7 +666,6 @@ class FundingTableModel(QtCore.QAbstractTableModel):
                                  len(self._symbols))
             self._symbols.append(sym)
             self._data[sym] = {}
-            self._next_times[sym] = None
             self.endInsertRows()
             
             # Emit signal for new symbol
@@ -695,11 +673,8 @@ class FundingTableModel(QtCore.QAbstractTableModel):
 
         # update value
         self._data[sym][exchange] = rate_str
-        if exchange == "Binance":
-            self._raw_map[sym] = raw_symbol
         row = self._symbols.index(sym)
-        exch_idx = EXCHANGES.index(exchange)
-        col = 1 if exch_idx == 0 else exch_idx + 2
+        col = EXCHANGES.index(exchange) + 1
         src_idx = self.index(row, col)
         # update the source model cell
         self.dataChanged.emit(src_idx, src_idx, [QtCore.Qt.DisplayRole])
@@ -710,16 +685,6 @@ class FundingTableModel(QtCore.QAbstractTableModel):
             proxy = view.model()
             view_idx = proxy.mapFromSource(src_idx)
             self.delegate.mark_changed(view_idx, positive)
-
-    @QtCore.Slot(str, int)
-    def update_next_funding(self, symbol: str, next_ts: int):
-        """Store next funding timestamp (ms) for symbol and refresh cell."""
-        if symbol not in self._symbols:
-            return
-        self._next_times[symbol] = next_ts
-        row = self._symbols.index(symbol)
-        idx = self.index(row, 2)
-        self.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
 
 
 class AskBidTableModel(QtCore.QAbstractTableModel):
@@ -1132,6 +1097,21 @@ class ChartWindow(QtWidgets.QMainWindow):
 
             self.chart.update()
 
+            title_ask = f"{self._ask_price}" if self._ask_price is not None else "-"
+            title_bid = f"{self._bid_price}" if self._bid_price is not None else "-"
+            if self._ask_price is not None and self._bid_price not in (None, 0):
+                spread = self._ask_price / self._bid_price - 1
+                spread_str = f"{spread:.5f}"
+                arb = self._bid_price / self._ask_price - 1 - (FEE_RATE_BUY + FEE_RATE_SELL)
+                arb_str = f"{arb:.5f}"
+            else:
+                spread_str = "-"
+                arb_str = "-"
+            self.chart.setTitle(
+                f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str} | Arbitrage: {arb_str}"
+            )
+
+
 # --- Background worker for DB download ---
 class DownloadTask(QtCore.QObject, QtCore.QRunnable):
     """Run Supabase fetch and Excel export in a separate thread."""
@@ -1216,8 +1196,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart_windows: list[ChartWindow] = []
         # WebSocket tasks started for live feeds
         self._ws_tasks: list[asyncio.Task] = []
-        # Symbols currently fetching next funding time
-        self._fetching_next: set[str] = set()
         self._really_closing = False
 
         # Merkezi container ve layout
@@ -1325,11 +1303,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._arb_timer = QtCore.QTimer(self)
         self._arb_timer.timeout.connect(self.process_arbitrage)
         self._arb_timer.start(500)
-
-        # Countdown refresh timer (1s)
-        self._countdown_timer = QtCore.QTimer(self)
-        self._countdown_timer.timeout.connect(self._refresh_countdowns)
-        self._countdown_timer.start(1000)
 
         # Başlangıç teması
         self.toggle_theme(self.btn_toggle_theme.isChecked())
@@ -2273,52 +2246,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 for win in list(self.chart_windows):
                     win.add_point(exchange, symbol, bid, ask)
         self._askbid_data.clear()
-    
-    def _refresh_countdowns(self):
-        if not hasattr(self, "model"):
-            return
-        
-        now_ms = int(time.time() * 1000)
-        fetch_list: list[tuple[str, str]] = []
-
-        # Hangi sembollerin süresinin dolduğunu topla
-        for sym in self.model._symbols:
-            ts = self.model._next_times.get(sym)
-            if ts is None:
-                continue
-            if now_ms >= ts and sym not in self._fetching_next:
-                raw_sym = self.model._raw_map.get(sym, sym)
-                fetch_list.append((raw_sym, sym))
-                self._fetching_next.add(sym)
-
-        # Yeni funding zamanlarını asenkron al
-        loop = asyncio.get_running_loop()
-        for raw, norm in fetch_list:
-            loop.create_task(self._fetch_and_set_next(raw))
-
-        # Countdown değerlerini yenilemek için tek bir sinyal gönder
-        if self.model._symbols:
-            top_left = self.model.index(0, 2)
-            bottom_right = self.model.index(len(self.model._symbols)-1, 2)
-            self.model.dataChanged.emit(top_left, bottom_right, [QtCore.Qt.DisplayRole])
-
-    async def _fetch_and_set_next(self, symbol: str):
-        url = "https://fapi.binance.com/fapi/v1/premiumIndex"
-        norm = normalize_symbol(symbol)
-        if norm is None:
-            return
-        try:
-            async with aiohttp.ClientSession() as session:
-                resp = await session.get(url, params={"symbol": symbol})
-                data = await resp.json()
-                ts = data.get("nextFundingTime")
-                if ts is not None:
-                    self.model.update_next_funding(norm, int(ts))
-        except Exception:
-            pass
-        finally:
-            self._fetching_next.discard(norm)
-                    
 
     @QtCore.Slot()
     @QtCore.Slot(QtCore.QModelIndex)
@@ -2548,40 +2475,22 @@ class MainWindow(QtWidgets.QMainWindow):
                     await _supabase_post("closed_arbitrage_logs", data)
             count += 1
             progress.setValue(count)
-            if count % 100 == 0:
-                await asyncio.sleep(0)
+            await asyncio.sleep(0)
 
         progress.close()
 
     async def _perform_synchronization(self):
         await self._upload_closed_logs()
-        msg = QtWidgets.QMessageBox(self)
-        msg.setIcon(QtWidgets.QMessageBox.Information)
-        msg.setText("Veri senkronizasyonu başarıyla tamamlandı")
-        msg.setWindowTitle("Bilgi")
-        msg.setStandardButtons(QtWidgets.QMessageBox.Ok)
-        msg.show()
-
+        QtCore.QTimer.singleShot(0, lambda: QtWidgets.QMessageBox.information(
+            self,
+            "Bilgi",
+            "Veri senkronizasyonu başarıyla tamamlandı"
+        ))
         asyncio.get_event_loop().create_task(self._refresh_db_symbols())
 
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         self._really_closing = True
-
-        # Stop background timers
-        self._askbid_timer.stop()
-        self._arb_timer.stop()
-        self._countdown_timer.stop()
-
-        # Cancel running WebSocket tasks
-        tasks = list(self._ws_tasks)
-        for t in tasks:
-            t.cancel()
-        if tasks:
-            asyncio.get_event_loop().create_task(
-                asyncio.gather(*tasks, return_exceptions=True)
-            )
-
         super().closeEvent(event)
 
 
@@ -2964,13 +2873,6 @@ def main():
 
             # 3) current_funding sözlüğünü güncelle
             window.current_funding[(exchange, norm_sym)] = rate_pct
-
-            if exchange == "Binance":
-                if norm_sym not in window._fetching_next:
-                    window._fetching_next.add(norm_sym)
-                    asyncio.get_event_loop().create_task(
-                        window._fetch_and_set_next(raw_symbol)
-                    )
 
             # 4) açık arbitraj fırsatlarını (end_dt is None) tara
             for ev in window.arb_model.events:
