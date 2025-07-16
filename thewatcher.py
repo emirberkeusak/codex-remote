@@ -2555,10 +2555,10 @@ class MainWindow(QtWidgets.QMainWindow):
                         if row >= 0:
                             self.arb_model.end_event(row)
 
-    async def _upload_closed_logs(self):
+    async def _upload_closed_logs(self) -> bool:
         df = self._proxy_to_dataframe(self.closed_proxy)
         if df.empty:
-            return
+            return True
         progress = QtWidgets.QProgressDialog(
             "Kapanmış arbitrajlar veritabanına yükleniyor...",
             None,
@@ -2622,8 +2622,9 @@ class MainWindow(QtWidgets.QMainWindow):
             progress.setValue(count)
             await asyncio.sleep(0)
 
+        ok = True
         if records:
-            await _supabase_post(
+            ok = await _supabase_post(
                 "closed_arbitrage_logs",
                 records,
                 params={
@@ -2634,15 +2635,28 @@ class MainWindow(QtWidgets.QMainWindow):
         progress.setValue(len(df))
 
         progress.close()
+        return ok
 
     async def _perform_synchronization(self):
-        await self._upload_closed_logs()
-        QtCore.QTimer.singleShot(0, lambda: QtWidgets.QMessageBox.information(
-            self,
-            "Bilgi",
-            "Veri senkronizasyonu başarıyla tamamlandı"
-        ))
-        if hasattr(self, "db_symbol_dropdown"):
+        ok = await self._upload_closed_logs()
+
+        def notify():
+            if ok:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Bilgi",
+                    "Veri senkronizasyonu başarıyla tamamlandı",
+                )
+            else:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Hata",
+                    "Veri senkronizasyonu başarısız oldu",
+                )
+
+        QtCore.QTimer.singleShot(0, notify)
+
+        if ok and hasattr(self, "db_symbol_dropdown"):
             asyncio.get_event_loop().create_task(self._refresh_db_symbols())
 
 
