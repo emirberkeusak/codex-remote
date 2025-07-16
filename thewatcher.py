@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 import pandas as pd
 
+
 import aiohttp
 import websockets
 from websockets.exceptions import ConnectionClosedError
@@ -113,8 +114,9 @@ async def _supabase_post(
         async with session.post(url, json=payload, headers=headers) as resp:
             text = await resp.text()
             if resp.status >= 400:
+                body = text.strip()
                 print(
-                    f"Supabase POST {endpoint} failed: {resp.status} {text}",
+                    f"Supabase POST {endpoint} failed: {resp.status} {body}",
                     file=sys.stderr,
                 )
                 return False
@@ -2569,16 +2571,6 @@ class MainWindow(QtWidgets.QMainWindow):
         df = self._proxy_to_dataframe(self.closed_proxy)
         if df.empty:
             return True
-        progress = QtWidgets.QProgressDialog(
-            "Kapanmış arbitrajlar veritabanına yükleniyor...",
-            None,
-            0,
-            len(df),
-            self,
-        )
-        progress.setWindowTitle("Database Senkronizasyonu")
-        progress.setWindowModality(QtCore.Qt.ApplicationModal)
-        progress.show()
 
         column_mapping = {
             "Symbol": "symbol",
@@ -2599,66 +2591,67 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         df.rename(columns=column_mapping, inplace=True)
         
-
-        count = 0
-        records = []
+        # 2) Dict listesi oluştur
+        records: list[dict] = []
         for _, row in df.iterrows():
             data = row.to_dict()
-            for field in (
-                "rate",
-                "final_rate",
-                "initial_ask",
-                "initial_bid",
-                "final_ask",
-                "final_bid",
-                "buy_fr",
-                "sell_fr",
-            ):
-                try:
-                    data[field] = float(data[field])
-                except Exception:
-                    data[field] = None
-            try:
-                data["repeat_count"] = int(data["repeat_count"])
-            except Exception:
-                data["repeat_count"] = 0
-            for col in ("start_dt", "end_dt"):
+            # Numerik alanları dönüştür
+            for fld in ("rate","final_rate","initial_ask","initial_bid","final_ask","final_bid","buy_fr","sell_fr"):
+                try:    data[fld] = float(data[fld])
+                except: data[fld] = None
+            try:    data["repeat_count"] = int(data.get("repeat_count",0))
+            except: data["repeat_count"] = 0
+
+            # Tarih formatı YYYY-MM-DDTHH:MM:SS
+            for col in ("start_dt","end_dt"):
                 if col in data and pd.notna(data[col]):
                     ts = pd.to_datetime(data[col], format="%d/%m/%Y %H:%M:%S")
                     data[col] = ts.strftime("%Y-%m-%dT%H:%M:%S")
 
             records.append(data)
-            count += 1
-            progress.setValue(count)
-            await asyncio.sleep(0)
 
         if not records:
-            progress.close()
             return True
 
-        progress.setLabelText("Veriler g\u00f6nderiliyor...")
-        progress.setMaximum(len(records))
-        progress.setValue(0)
+        # 3) Zaman aralığına göre DB’de varolanları çek
+        earliest = min(r["start_dt"] for r in records)
+        latest   = max(r["end_dt"]   for r in records if r["end_dt"])
+        existing = await fetch_closed_logs(earliest, latest)
+        existing_keys = {
+            (r["symbol"], r["buy_exch"], r["sell_exch"], r["start_dt"])
+            for r in existing
+        }
 
+        # 4) Yalnızca yeni kayıtları bırak
+        records = [
+            r for r in records
+            if (r["symbol"], r["buy_exch"], r["sell_exch"], r["start_dt"]) not in existing_keys
+        ]
+        if not records:
+            return True
+
+        # 5) Progress dialog göster
+        progress = QtWidgets.QProgressDialog(
+            "Kapanmış arbitrajlar veritabanına yükleniyor...",
+             None,
+             0,
+             len(records),
+             self,
+        )
+        progress.setWindowModality(QtCore.Qt.ApplicationModal)
+        progress.show()
+
+        # 6) Batch olarak gönder
         batch_size = 500
         sent = 0
         while sent < len(records):
-            batch = records[sent:sent + batch_size]
-            ok = await _supabase_post(
-                "closed_arbitrage_logs",
-                batch,
-                params={
-                    "on_conflict": "symbol,buy_exch,sell_exch,start_dt,end_dt"
-                },
-                ignore_duplicates=True,
-            )
+            batch = records[sent:sent+batch_size]
+            ok = await _supabase_post("closed_arbitrage_logs", batch)
             if not ok:
-                print(f"Batch starting at {sent} failed", file=sys.stderr)
                 progress.close()
                 return False
             sent += len(batch)
             progress.setValue(sent)
-            await asyncio.sleep(0)
 
         progress.close()
         return True
