@@ -42,6 +42,7 @@ FUNDING_COLUMNS = [
     "OKX",
     "OKX Countdown",
     "Bybit",
+    "Bybit Countdown",
     "Bitget",
     "Gateio",
 ]
@@ -783,8 +784,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
             self.delegate.mark_changed(view_idx, positive)
 
     def _update_countdowns(self):
-        col = FUNDING_COLUMNS.index("Binance Countdown")
-        for exch in ("Binance", "OKX"):
+        for exch in ("Binance", "OKX", "Bybit"):
             col_name = f"{exch} Countdown"
             if col_name not in FUNDING_COLUMNS:
                 continue
@@ -2826,7 +2826,14 @@ async def handle_bybit_batch(syms, cb, status_cb):
                         entries = [entries]
                     for d in entries:
                         if "symbol" in d and "fundingRate" in d:
-                            cb("Bybit", d["symbol"], float(d["fundingRate"]) * 100, None)
+                            next_ts = None
+                            nft = d.get("nextFundingTime")
+                            if nft is not None:
+                                try:
+                                    next_ts = int(nft) / 1000
+                                except (TypeError, ValueError):
+                                    next_ts = None
+                            cb("Bybit", d["symbol"], float(d["fundingRate"]) * 100, next_ts)
         except Exception as e:
             # Mark connection down
             status_cb("Bybit", False)
