@@ -1,7 +1,6 @@
 from license_checker import run_license_check
 from PySide6.QtWidgets import QMessageBox
 import sys
-import sys
 import os
 import asyncio
 import json
@@ -13,6 +12,7 @@ import pandas as pd
 import aiohttp
 import websockets
 from websockets.exceptions import ConnectionClosedError
+from urllib.parse import urlencode
 
 from PySide6 import QtWidgets, QtCore, QtGui, QtCharts
 from PySide6.QtWidgets import QHeaderView
@@ -20,8 +20,7 @@ from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QV
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 from PySide6.QtCore import Qt
 import qasync
-import random
-import matplotlib
+
 
 def resource_path(relative_path):
     """EXE içinden splash.png yolunu çözer"""
@@ -62,21 +61,57 @@ SUPABASE_KEY = (
     "NjczMjMwNn0.7XIFyJoBSqV1L-QeMJY14bOfbpGiFqHUTAsqK4e67ao"
 )
 
+# Persistent aiohttp sessions keyed by event loop
+_supabase_sessions: dict[asyncio.AbstractEventLoop, aiohttp.ClientSession] = {}
 
-async def _supabase_post(endpoint: str, payload: dict) -> bool:
+async def _get_supabase_session() -> aiohttp.ClientSession:
+    """Return a persistent aiohttp session for the running loop."""
+    loop = asyncio.get_running_loop()
+    sess = _supabase_sessions.get(loop)
+    if sess is None or sess.closed:
+        sess = aiohttp.ClientSession()
+        _supabase_sessions[loop] = sess
+    return sess
+
+async def close_supabase_session() -> None:
+    """Close the session associated with the running loop if any."""
+    loop = asyncio.get_running_loop()
+    sess = _supabase_sessions.pop(loop, None)
+    if sess and not sess.closed:
+        await sess.close()
+
+async def close_all_supabase_sessions() -> None:
+    """Close all cached sessions."""
+    for sess in list(_supabase_sessions.values()):
+        if not sess.closed:
+            await sess.close()
+    _supabase_sessions.clear()
+
+
+async def _supabase_post(
+    endpoint: str,
+    payload: dict | list[dict],
+    params: dict | None = None,
+    ignore_duplicates: bool = False,
+) -> bool:
     """Send a POST request to Supabase REST endpoint."""
     url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
+    if params:
+        url += f"?{urlencode(params)}"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=representation",
     }
+    prefer = ["return=representation"]
+    if ignore_duplicates:
+        prefer.append("resolution=ignore-duplicates")
+    headers["Prefer"] = ",".join(prefer)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers) as resp:
-            await resp.text()  # drain response
-            return resp.status < 400
+    session = await _get_supabase_session()
+    async with session.post(url, json=payload, headers=headers) as resp:
+        await resp.text()  # drain response
+        return resp.status < 400
         
 
 async def _supabase_get(endpoint: str, params: dict) -> list[dict]:
@@ -87,12 +122,12 @@ async def _supabase_get(endpoint: str, params: dict) -> list[dict]:
         "Authorization": f"Bearer {SUPABASE_KEY}",
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, params=params) as resp:
-            if resp.status >= 400:
-                await resp.text()
-                return []
-            return await resp.json()
+    session = await _get_supabase_session()
+    async with session.get(url, headers=headers, params=params) as resp:
+        if resp.status >= 400:
+            await resp.text()
+            return []
+        return await resp.json()
 
 
 async def fetch_closed_logs(
@@ -455,6 +490,11 @@ class ArbitrajDiffModel(QtCore.QAbstractTableModel):
     def __init__(self):
         super().__init__()
         self.events: list[ArbitrajEvent] = []
+        self._row_map: dict[ArbitrajEvent, int] = {}
+
+    def row_of(self, ev: ArbitrajEvent) -> int:
+        """Return the current row index for the given event."""
+        return self._row_map.get(ev, -1)
 
     def rowCount(self, parent=None):
         return len(self.events)
@@ -477,14 +517,18 @@ class ArbitrajDiffModel(QtCore.QAbstractTableModel):
     def add_event(self, ev: ArbitrajEvent):
         self.beginInsertRows(QtCore.QModelIndex(), len(self.events), len(self.events))
         self.events.append(ev)
+        self._row_map[ev] = len(self.events) - 1
         self.endInsertRows()
         self.symbolsUpdated.emit(sorted({e.symbol for e in self.events}))
 
     def remove_event(self, row: int):
         # bu metot mutlaka burada olmalı
         self.beginRemoveRows(QtCore.QModelIndex(), row, row)
-        self.events.pop(row)
+        ev = self.events.pop(row)
+        self._row_map.pop(ev, None)
         self.endRemoveRows()
+        for idx in range(row, len(self.events)):
+            self._row_map[self.events[idx]] = idx
         # Tekrar Sayısı sütununu güncelle
         if self.rowCount() > 0:
             top = self.index(0, 14)
@@ -516,6 +560,7 @@ class ArbitrajDiffModel(QtCore.QAbstractTableModel):
         """Reset all events and notify views."""
         self.beginResetModel()
         self.events.clear()
+        self._row_map.clear()
         self.endResetModel()
         self.symbolsUpdated.emit([])
 
@@ -1058,6 +1103,18 @@ class ChartWindow(QtWidgets.QMainWindow):
                 if x > self.axis_x.max().toMSecsSinceEpoch():
                     self.axis_x.setMax(ts)
 
+                    # Drop points that scrolled out of the visible window
+            for series in (self.ask_series, self.bid_series):
+                pts = series.pointsVector()
+                remove_count = 0
+                for pt in pts:
+                    if pt.x() < start_ms:
+                        remove_count += 1
+                    else:
+                        break
+                if remove_count:
+                    series.removePoints(0, remove_count)
+
             # Maintain a rolling time window on the X axis
             start_ms = x - self.window_ms
             if start_ms < self._start_ms:
@@ -1096,21 +1153,6 @@ class ChartWindow(QtWidgets.QMainWindow):
             )
 
             self.chart.update()
-
-            title_ask = f"{self._ask_price}" if self._ask_price is not None else "-"
-            title_bid = f"{self._bid_price}" if self._bid_price is not None else "-"
-            if self._ask_price is not None and self._bid_price not in (None, 0):
-                spread = self._ask_price / self._bid_price - 1
-                spread_str = f"{spread:.5f}"
-                arb = self._bid_price / self._ask_price - 1 - (FEE_RATE_BUY + FEE_RATE_SELL)
-                arb_str = f"{arb:.5f}"
-            else:
-                spread_str = "-"
-                arb_str = "-"
-            self.chart.setTitle(
-                f"Ask Price: {title_ask} | Bid Price: {title_bid} | Spread: {spread_str} | Arbitrage: {arb_str}"
-            )
-
 
 # --- Background worker for DB download ---
 class DownloadTask(QtCore.QObject, QtCore.QRunnable):
@@ -1160,7 +1202,41 @@ class DownloadTask(QtCore.QObject, QtCore.QRunnable):
                 return False, str(e)
 
         ok, msg = loop.run_until_complete(job())
+        loop.run_until_complete(close_supabase_session())
         loop.close()
+        QtCore.QMetaObject.invokeMethod(
+            self,
+            "_emit",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(bool, ok),
+            QtCore.Q_ARG(str, msg),
+        )
+
+    @QtCore.Slot(bool, str)
+    def _emit(self, ok: bool, msg: str):
+        self.finished.emit(ok, msg)
+        self.deleteLater()
+
+# --- Generic DataFrame export worker ---
+class ExportTask(QtCore.QObject, QtCore.QRunnable):
+    """Run DataFrame export in a separate thread."""
+
+    finished = QtCore.Signal(bool, str)
+
+    def __init__(self, func, path: str):
+        super().__init__()
+        QtCore.QRunnable.__init__(self)
+        self.func = func
+        self.path = path
+        self.setAutoDelete(False)
+
+    @QtCore.Slot()
+    def run(self):
+        try:
+            self.func()
+            ok, msg = True, self.path
+        except Exception as e:
+            ok, msg = False, str(e)
         QtCore.QMetaObject.invokeMethod(
             self,
             "_emit",
@@ -1961,11 +2037,8 @@ class MainWindow(QtWidgets.QMainWindow):
     
 
         df = self._proxy_to_dataframe(proxy)
-        try:
-            df.to_excel(path, index=False)
-            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
+        func = lambda: df.to_excel(path, index=False)
+        self._start_export(func, path)
 
     def on_export_askbid_excel(self):
         """Ask/Bid tablosunu Excel'e aktar."""
@@ -1999,11 +2072,9 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Bilgi", "Tablo boş olduğu için Excel kaydedilmedi.")
             return
 
-        try:
-            pd.DataFrame(rows, columns=headers).to_excel(filename, index=False)
-            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{filename}")
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
+        df = pd.DataFrame(rows, columns=headers)
+        func = lambda: df.to_excel(filename, index=False)
+        self._start_export(func, filename)
 
     def on_export_funding_excel(self):
         """Funding-rate tablosunu Excel'e aktar."""
@@ -2035,11 +2106,8 @@ class MainWindow(QtWidgets.QMainWindow):
             rows.append(rec)
 
         df = pd.DataFrame(rows, columns=headers)
-        try:
-            df.to_excel(path, index=False)
-            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
+        func = lambda: df.to_excel(path, index=False)
+        self._start_export(func, path)
 
     @QtCore.Slot()
     def on_download_db_data(self):
@@ -2074,6 +2142,18 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{msg}")
         else:
             QtWidgets.QMessageBox.critical(self, "Hata", msg)
+
+    def _start_export(self, func, path: str):
+        worker = ExportTask(func, path)
+        worker.finished.connect(self._on_export_finished)
+        QtCore.QThreadPool.globalInstance().start(worker)
+
+    @QtCore.Slot(bool, str)
+    def _on_export_finished(self, ok: bool, msg: str):
+        if ok:
+            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{msg}")
+        else:
+            QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{msg}")
 
 
     @QtCore.Slot()
@@ -2171,7 +2251,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path:
             return
 
-        try:
+        def save():
             with pd.ExcelWriter(path) as writer:
                 pd.DataFrame(open_rows, columns=headers).to_excel(
                     writer, sheet_name="Açık Arbitrajlar Tablosu", index=False
@@ -2179,9 +2259,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 pd.DataFrame(closed_rows, columns=headers).to_excel(
                     writer, sheet_name="Kapalı Arbitrajlar Tablosu", index=False
                 )
-            QtWidgets.QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{path}")
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{e}")
+
+            self._start_export(save, path)
 
     def on_switch_duration_mode(self, checked: bool):
         """Toggle between min/max duration modes and reset tables."""
@@ -2317,7 +2396,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for key, ev in list(self._arb_map.items()):
                 elapsed = (now - ev.start_dt).total_seconds()
                 if elapsed > self.max_duration:
-                    row = self.arb_model.events.index(ev)
+                    row = self.arb_model.row_of(ev)
                     self.arb_model.remove_event(row)
                     self._arb_map.pop(key, None)
 
@@ -2367,7 +2446,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     elif net_rate <= self.arb_close_threshold:
                         if key in self._arb_map:
                             ev = self._arb_map.pop(key)
-                            row = self.arb_model.events.index(ev)
+                            row = self.arb_model.row_of(ev)
 
                             # kapanıştaki son arbitraj oranını kaydet
                             ev.final_rate = net_rate
@@ -2378,7 +2457,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
                             # Süre kontrolü
                             elapsed = (datetime.now() - ev.start_dt).total_seconds()
-                            row = self.arb_model.events.index(ev)
+                            row = self.arb_model.row_of(ev)
                             if not self.use_max_duration:
                                 if elapsed < self.min_duration:
                                     self.arb_model.remove_event(row)
@@ -2427,7 +2506,7 @@ class MainWindow(QtWidgets.QMainWindow):
         
 
         count = 0
-        existing_keys = set()
+        records = []
         for _, row in df.iterrows():
             data = row.to_dict()
             for field in (
@@ -2453,29 +2532,21 @@ class MainWindow(QtWidgets.QMainWindow):
                     ts = pd.to_datetime(data[col], format="%d/%m/%Y %H:%M:%S")
                     data[col] = ts.strftime("%Y-%m-%dT%H:%M:%S")
 
-            key = (
-                data.get("symbol"),
-                data.get("buy_exch"),
-                data.get("sell_exch"),
-                data.get("start_dt"),
-                data.get("end_dt"),
-            )
-
-            if key not in existing_keys:
-                existing_keys.add(key)
-                params = {
-                    "symbol": f"eq.{key[0]}",
-                    "buy_exch": f"eq.{key[1]}",
-                    "sell_exch": f"eq.{key[2]}",
-                    "start_dt": f"eq.{key[3]}",
-                    "end_dt": f"eq.{key[4]}",
-                }
-                existing = await _supabase_get("closed_arbitrage_logs", params)
-                if not existing:
-                    await _supabase_post("closed_arbitrage_logs", data)
+            records.append(data)
             count += 1
             progress.setValue(count)
             await asyncio.sleep(0)
+
+        if records:
+            await _supabase_post(
+                "closed_arbitrage_logs",
+                records,
+                params={
+                    "on_conflict": "symbol,buy_exch,sell_exch,start_dt,end_dt"
+                },
+                ignore_duplicates=True,
+            )
+        progress.setValue(len(df))
 
         progress.close()
 
@@ -2892,7 +2963,7 @@ def main():
                     continue
 
                 # dataChanged sinyali fırlat
-                row = window.arb_model.events.index(ev)
+                row = window.arb_model.row_of(ev)
                 idx = window.arb_model.index(row, col)
                 window.arb_model.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
 
@@ -2913,6 +2984,7 @@ def main():
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
+        loop.run_until_complete(close_all_supabase_sessions())
         loop.stop()
         loop.close()
         QtWidgets.QApplication.quit()
