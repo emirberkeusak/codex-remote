@@ -1110,13 +1110,10 @@ class ChartWindow(QtWidgets.QMainWindow):
 
             # Drop points that scrolled out of the visible window
             for series in (self.ask_series, self.bid_series):
-                pts = series.pointsVector()
                 remove_count = 0
-                for pt in pts:
-                    if pt.x() < start_ms:
-                        remove_count += 1
-                    else:
-                        break
+                count = series.count()
+                while remove_count < count and series.at(remove_count).x() < start_ms:
+                    remove_count += 1
                 if remove_count:
                     series.removePoints(0, remove_count)
 
@@ -1251,6 +1248,102 @@ class ExportTask(QtCore.QObject, QtCore.QRunnable):
         self.finished.emit(ok, msg)
         self.deleteLater()
 
+# --- Arbitrage processing worker ---
+class ArbitrageTask(QtCore.QObject, QtCore.QRunnable):
+    """Run heavy arbitrage calculations in a separate thread."""
+
+    finished = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        data: dict,
+        funding: dict,
+        arb_map: dict,
+        ask_fee: float,
+        bid_fee: float,
+        threshold: float,
+        close_threshold: float,
+        use_max: bool,
+        max_duration: int,
+    ):
+        super().__init__()
+        QtCore.QRunnable.__init__(self)
+        self.data = data
+        self.funding = funding
+        self.arb_map = arb_map
+        self.ask_fee = ask_fee
+        self.bid_fee = bid_fee
+        self.threshold = threshold
+        self.close_threshold = close_threshold
+        self.use_max = use_max
+        self.max_duration = max_duration
+        self.setAutoDelete(False)
+
+    @QtCore.Slot()
+    def run(self):
+        actions = []
+        now = datetime.now()
+
+        if self.use_max:
+            for key, ev in list(self.arb_map.items()):
+                elapsed = (now - ev.start_dt).total_seconds()
+                if elapsed > self.max_duration:
+                    actions.append(("expire", ev, key))
+
+        for symbol, exch_data in self.data.items():
+            for buy_exch, (_, ask_price) in exch_data.items():
+                if ask_price <= 0:
+                    continue
+                for sell_exch, (bid_price, _) in exch_data.items():
+                    if sell_exch == buy_exch or bid_price <= 0:
+                        continue
+                    raw_rate = bid_price / ask_price - 1
+                    net_rate = raw_rate - (self.ask_fee + self.bid_fee)
+
+                    if (
+                        (buy_exch, symbol) not in self.funding
+                        or (sell_exch, symbol) not in self.funding
+                    ):
+                        continue
+
+                    initial_buy_fr = self.funding[(buy_exch, symbol)]
+                    initial_sell_fr = self.funding[(sell_exch, symbol)]
+
+                    if net_rate >= 0.60:
+                        continue
+
+                    key = (symbol, buy_exch, sell_exch)
+
+                    if net_rate >= self.threshold:
+                        if key not in self.arb_map:
+                            ev = ArbitrajEvent(
+                                symbol,
+                                buy_exch,
+                                sell_exch,
+                                net_rate,
+                                initial_ask=ask_price,
+                                initial_bid=bid_price,
+                                initial_buy_fr=initial_buy_fr,
+                                initial_sell_fr=initial_sell_fr,
+                            )
+                            actions.append(("add", ev, key))
+                    elif net_rate <= self.close_threshold:
+                        if key in self.arb_map:
+                            ev = self.arb_map[key]
+                            actions.append(
+                                ("close", ev, key, net_rate, ask_price, bid_price)
+                            )
+
+        self._result = actions
+        QtCore.QMetaObject.invokeMethod(
+            self, "_emit", QtCore.Qt.QueuedConnection
+        )
+
+    @QtCore.Slot()
+    def _emit(self):
+        self.finished.emit(self._result)
+        self.deleteLater()
+
 # --- Main Window ---
 class MainWindow(QtWidgets.QMainWindow):
     themeChanged = QtCore.Signal(bool)
@@ -1377,8 +1470,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._askbid_timer.start(33)
 
         # Arbitrage işlemleri timer (500 ms)
+        self._arb_running = False
         self._arb_timer = QtCore.QTimer(self)
-        self._arb_timer.timeout.connect(self.process_arbitrage)
+        self._arb_timer.timeout.connect(self._start_arbitrage_worker)
         self._arb_timer.start(500)
 
         # Başlangıç teması
@@ -2317,15 +2411,22 @@ class MainWindow(QtWidgets.QMainWindow):
     # ─── WebSocket’ten gelen verileri önce dict’e koyan metod ───
     def _enqueue_askbid(self, exchange, symbol, bid, ask):
         self._askbid_data[(exchange, symbol)] = (bid, ask)
+        if not self._askbid_timer.isActive():
+            self._askbid_timer.start(33)
 
     # ─── ~30 Hz’de dict’i boşaltıp tabloyu güncelleyen metod ───
     def _flush_askbid_data(self):
+        if not self._askbid_data:
+            self._askbid_timer.stop()
+            return
+
         for (exchange, symbol), (bid, ask) in self._askbid_data.items():
             if symbol and isinstance(symbol, str):
                 self.askbid_model.update_askbid(exchange, symbol, bid, ask)
                 for win in list(self.chart_windows):
                     win.add_point(exchange, symbol, bid, ask)
         self._askbid_data.clear()
+        self._askbid_timer.stop()
 
     @QtCore.Slot()
     @QtCore.Slot(QtCore.QModelIndex)
@@ -2386,90 +2487,66 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
      
-    def process_arbitrage(self):
-        fee_rate_buy = self.ask_fee_rate
-        fee_rate_sell = self.bid_fee_rate
-        data = self.askbid_model._data
+    def _start_arbitrage_worker(self):
+        """Trigger background task for arbitrage calculations."""
+        if self._arb_running:
+            return
+        
+        data = {s: d.copy() for s, d in self.askbid_model._data.items()}
+        funding = self.current_funding.copy()
+        worker = ArbitrageTask(
+            data,
+            funding,
+            self._arb_map.copy(),
+            self.ask_fee_rate,
+            self.bid_fee_rate,
+            self.arb_threshold,
+            self.arb_close_threshold,
+            self.use_max_duration,
+            self.max_duration,
+        )
+        worker.finished.connect(self._on_arbitrage_actions)
+        self._arb_running = True
+        QtCore.QThreadPool.globalInstance().start(worker)
 
-        # Remove stale opportunities that exceeded max duration
-        if self.use_max_duration:
-            now = datetime.now()
-            for key, ev in list(self._arb_map.items()):
-                elapsed = (now - ev.start_dt).total_seconds()
-                if elapsed > self.max_duration:
-                    row = self.arb_model.row_of(ev)
+    @QtCore.Slot(object)
+    def _on_arbitrage_actions(self, actions: list):
+        self._arb_running = False
+        now = datetime.now()
+        for act in actions:
+            kind = act[0]
+            if kind == "expire":
+                ev, key = act[1], act[2]
+                row = self.arb_model.row_of(ev)
+                if row >= 0:
                     self.arb_model.remove_event(row)
-                    self._arb_map.pop(key, None)
-
-
-        for symbol, exch_data in data.items():
-            for buy_exch, (_, ask_price) in exch_data.items():
-                if ask_price <= 0:
-                    continue
-                for sell_exch, (bid_price, _) in exch_data.items():
-                    if sell_exch == buy_exch or bid_price <= 0:
-                        continue
-
-                    raw_rate = bid_price/ask_price - 1
-                    total_fee_rate = fee_rate_buy + fee_rate_sell
-                    net_rate = raw_rate - total_fee_rate
-                    #ask_gross = ask_price * (1 + fee_rate)
-                    #net_rate = raw_rate - total_fee_rate
-                    buy_key  = (buy_exch, symbol)
-                    sell_key = (sell_exch, symbol)
-
-                    if buy_key not in self.current_funding or sell_key not in self.current_funding:
-                        continue
-
-                    initial_buy_fr  = self.current_funding[buy_key]
-                    initial_sell_fr = self.current_funding[sell_key]
-
-
-                    if net_rate >= 0.60:
-                        continue
-
-                    key = (symbol, buy_exch, sell_exch)
-
-
-                    # Başlayan fırsat
-                    if net_rate >= self.arb_threshold:
-                        if key not in self._arb_map:
-                            ev = ArbitrajEvent(symbol, buy_exch, sell_exch, net_rate, 
-                                               initial_ask= ask_price, 
-                                               initial_bid = bid_price, 
-                                               initial_buy_fr    = initial_buy_fr, 
-                                               initial_sell_fr   = initial_sell_fr,
-                            )
-                            self.arb_model.add_event(ev)
-                            self._arb_map[key] = ev
-
-                    # Biten fırsat
-                    elif net_rate <= self.arb_close_threshold:
-                        if key in self._arb_map:
-                            ev = self._arb_map.pop(key)
-                            row = self.arb_model.row_of(ev)
-
-                            # kapanıştaki son arbitraj oranını kaydet
-                            ev.final_rate = net_rate
-
-                            # kapanıştaki fiyatları kaydet
-                            ev.final_ask = ask_price
-                            ev.final_bid = bid_price
-
-                            # Süre kontrolü
-                            elapsed = (datetime.now() - ev.start_dt).total_seconds()
-                            row = self.arb_model.row_of(ev)
-                            if not self.use_max_duration:
-                                if elapsed < self.min_duration:
-                                    self.arb_model.remove_event(row)
-                                else:
-                                    self.arb_model.end_event(row)
-                            else:
-                                if elapsed > self.max_duration:
-                                    self.arb_model.remove_event(row)
-                                else:
-                                    self.arb_model.end_event(row)
-
+                self._arb_map.pop(key, None)
+            elif kind == "add":
+                ev, key = act[1], act[2]
+                self.arb_model.add_event(ev)
+                self._arb_map[key] = ev
+            elif kind == "close":
+                ev, key, net_rate, ask_price, bid_price = act[1:]
+                self._arb_map.pop(key, None)
+                ev.final_rate = net_rate
+                ev.final_ask = ask_price
+                ev.final_bid = bid_price
+                elapsed = (now - ev.start_dt).total_seconds()
+                row = self.arb_model.row_of(ev)
+                if not self.use_max_duration:
+                    if elapsed < self.min_duration:
+                        if row >= 0:
+                            self.arb_model.remove_event(row)
+                    else:
+                        if row >= 0:
+                            self.arb_model.end_event(row)
+                else:
+                    if elapsed > self.max_duration:
+                        if row >= 0:
+                            self.arb_model.remove_event(row)
+                    else:
+                        if row >= 0:
+                            self.arb_model.end_event(row)
 
     async def _upload_closed_logs(self):
         df = self._proxy_to_dataframe(self.closed_proxy)
