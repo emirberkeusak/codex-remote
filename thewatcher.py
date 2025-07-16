@@ -34,6 +34,18 @@ EXCHANGES = ["Binance", "OKX", "Bybit", "Bitget", "Gateio"]
 # Sadece Binance için Ask/Bid kolonları
 AB_EXCHANGES = ["Binance", "OKX", "Bybit", "Bitget", "Gateio"]
 
+# Funding tablosu kolon başlıkları
+FUNDING_COLUMNS = [
+    "Symbol",
+    "Binance",
+    "Binance Countdown",
+    "OKX",
+    "Bybit",
+    "Bitget",
+    "Gateio",
+]
+
+
 
 BINANCE_URL            = "wss://fstream.binance.com/stream?streams=!markPrice@arr"
 OKX_WS_URL             = "wss://ws.okx.com:8443/ws/v5/public"
@@ -675,17 +687,23 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         self._symbols  = []                     # list of normalized symbols
         self._data     = {}                     # symbol -> {exchange: str}
         self._previous = {}                     # (symbol,exchange) -> float (rounded to 4dp)
+        self._next_funding_ts: dict[str, float] = {}
         self.delegate  = None
+
+        # timer for countdown updates
+        self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self._update_countdowns)
+        self._timer.start(1000)
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._symbols)
 
     def columnCount(self, parent=QtCore.QModelIndex()):
-        return 1 + len(EXCHANGES)
+        return len(FUNDING_COLUMNS)
 
     def headerData(self, section, orientation, role):
         if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
-            return "Symbol" if section == 0 else EXCHANGES[section-1]
+            return FUNDING_COLUMNS[section]
         return None
 
     def data(self, index, role=QtCore.Qt.DisplayRole):
@@ -693,13 +711,24 @@ class FundingTableModel(QtCore.QAbstractTableModel):
             return None
         r, c = index.row(), index.column()
         sym = self._symbols[r]
-        if c == 0:
+        column_name = FUNDING_COLUMNS[c]
+        if column_name == "Symbol":
             return sym
-        exch = EXCHANGES[c-1]
+        if column_name == "Binance Countdown":
+            ts = self._next_funding_ts.get(sym)
+            if ts is None:
+                return ""
+            delta = int(ts - time.time())
+            if delta < 0:
+                delta = 0
+            h, rem = divmod(delta, 3600)
+            m, s = divmod(rem, 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        exch = column_name
         return self._data.get(sym, {}).get(exch, "")
 
-    @QtCore.Slot(str, str, float)
-    def update_rate(self, exchange: str, raw_symbol: str, rate_pct: float):
+    @QtCore.Slot(str, str, float, object)
+    def update_rate(self, exchange: str, raw_symbol: str, rate_pct: float, next_ts=None):
         sym = normalize_symbol(raw_symbol)
         if not sym:
             return
@@ -731,10 +760,17 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         # update value
         self._data[sym][exchange] = rate_str
         row = self._symbols.index(sym)
-        col = EXCHANGES.index(exchange) + 1
+        col = FUNDING_COLUMNS.index(exchange)
         src_idx = self.index(row, col)
         # update the source model cell
         self.dataChanged.emit(src_idx, src_idx, [QtCore.Qt.DisplayRole])
+
+        # store next funding timestamp for Binance and update countdown cell
+        if exchange == "Binance" and next_ts is not None:
+            self._next_funding_ts[sym] = next_ts
+            c_col = FUNDING_COLUMNS.index("Binance Countdown")
+            c_idx = self.index(row, c_col)
+            self.dataChanged.emit(c_idx, c_idx, [QtCore.Qt.DisplayRole])
 
         # flash via proxy index so empty cells don't flash
         if self.delegate and changed:
@@ -742,6 +778,13 @@ class FundingTableModel(QtCore.QAbstractTableModel):
             proxy = view.model()
             view_idx = proxy.mapFromSource(src_idx)
             self.delegate.mark_changed(view_idx, positive)
+
+    def _update_countdowns(self):
+        col = FUNDING_COLUMNS.index("Binance Countdown")
+        for row, sym in enumerate(self._symbols):
+            if sym in self._next_funding_ts:
+                idx = self.index(row, col)
+                self.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
 
 
 class AskBidTableModel(QtCore.QAbstractTableModel):
@@ -2698,7 +2741,10 @@ async def publish_binance(cb, status_cb):
                     m = json.loads(raw)
                     for u in m.get("data", []):
                         if "s" in u and "r" in u:
-                            cb("Binance", u["s"], float(u["r"]) * 100)
+                            ts = u.get("T")
+                            if ts is not None:
+                                ts = ts / 1000
+                            cb("Binance", u["s"], float(u["r"]) * 100, ts)
         except Exception as e:
             # bağlantı koptu → indicator’u mavi yap
             status_cb("Binance", False)
@@ -2732,7 +2778,7 @@ async def publish_okx(cb, status_cb):
                 async for raw in ws:
                     m = json.loads(raw)
                     for e in m.get("data", []):
-                        cb("OKX", e["instId"], float(e["fundingRate"]) * 100)
+                        cb("OKX", e["instId"], float(e["fundingRate"]) * 100, None)
         except Exception as ex:
             # bağlantı koptu
             status_cb("OKX", False)
@@ -2760,7 +2806,7 @@ async def handle_bybit_batch(syms, cb, status_cb):
                         entries = [entries]
                     for d in entries:
                         if "symbol" in d and "fundingRate" in d:
-                            cb("Bybit", d["symbol"], float(d["fundingRate"]) * 100)
+                            cb("Bybit", d["symbol"], float(d["fundingRate"]) * 100, None)
         except Exception as e:
             # Mark connection down
             status_cb("Bybit", False)
@@ -2796,7 +2842,7 @@ async def handle_bitget_batch(syms, cb, status_cb):
                     if data.get("action") in ("snapshot","update"):
                         for d in data.get("data", []):
                             if "instId" in d and "fundingRate" in d:
-                                cb("Bitget", d["instId"], float(d["fundingRate"]) * 100)
+                                cb("Bitget", d["instId"], float(d["fundingRate"]) * 100, None)
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget] Error: {e}, reconnecting in 5s")
@@ -2844,7 +2890,7 @@ async def publish_gateio(cb, status_cb):
                     if m.get("event") == "update" and m.get("channel") == "futures.tickers":
                         for d in m.get("result", []):
                             if "contract" in d and "funding_rate" in d:
-                                cb("Gateio", d["contract"], float(d["funding_rate"]) * 100)
+                                cb("Gateio", d["contract"], float(d["funding_rate"]) * 100, None)
 
         except Exception as e:
             # connection down
@@ -3052,9 +3098,9 @@ def main():
         window.showMaximized()
 
         # → Funding-rate geldiğinde hem modele hem current_funding’e yazacak callback
-        def fr_cb(exchange: str, raw_symbol: str, rate_pct: float):
+        def fr_cb(exchange: str, raw_symbol: str, rate_pct: float, next_ts=None):
             # 1) Funding Rate Live tablosunu güncelle
-            window.model.update_rate(exchange, raw_symbol, rate_pct)
+            window.model.update_rate(exchange, raw_symbol, rate_pct, next_ts)
 
             # 2) normalize edilmiş sembolü al
             norm_sym = normalize_symbol(raw_symbol)
