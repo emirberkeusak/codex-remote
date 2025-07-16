@@ -46,6 +46,7 @@ FUNDING_COLUMNS = [
     "Bitget",
     "Bitget Countdown",
     "Gateio",
+    "Gateio Countdown",
 ]
 
 
@@ -677,6 +678,13 @@ def next_bitget_funding_ts(now: float | None = None) -> float:
     interval = 8 * 3600  # funding every 8 hours
     return ((int(now) // interval) + 1) * interval
 
+def next_gateio_funding_ts(now: float | None = None) -> float:
+    """Return the next Gateio funding timestamp (UTC)."""
+    if now is None:
+        now = time.time()
+    interval = 8 * 3600  # funding every 8 hours
+    return ((int(now) // interval) + 1) * interval
+
 async def fetch_gateio_swaps() -> list[str]:
     async with aiohttp.ClientSession() as s:
         r = await s.get(GATEIO_REST_TICKERS)
@@ -792,7 +800,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
             self.delegate.mark_changed(view_idx, positive)
 
     def _update_countdowns(self):
-        for exch in ("Binance", "OKX", "Bybit", "Bitget"):
+        for exch in ("Binance", "OKX", "Bybit", "Bitget", "Gateio"):
             col_name = f"{exch} Countdown"
             if col_name not in FUNDING_COLUMNS:
                 continue
@@ -2929,9 +2937,15 @@ async def publish_gateio(cb, status_cb):
                 async for raw in ws:
                     m = json.loads(raw)
                     if m.get("event") == "update" and m.get("channel") == "futures.tickers":
+                        next_ts = next_gateio_funding_ts()
                         for d in m.get("result", []):
                             if "contract" in d and "funding_rate" in d:
-                                cb("Gateio", d["contract"], float(d["funding_rate"]) * 100, None)
+                                cb(
+                                    "Gateio",
+                                    d["contract"],
+                                    float(d["funding_rate"]) * 100,
+                                    next_ts,
+                                )
 
         except Exception as e:
             # connection down
