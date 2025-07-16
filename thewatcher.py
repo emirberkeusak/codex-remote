@@ -168,7 +168,8 @@ class FlashDelegate(QtWidgets.QStyledItemDelegate):
         self._flash_cells: dict[tuple[int,int], tuple[float,bool]] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_timeout)
-        self._timer.start(100)
+        self._timer.setTimerType(QtCore.Qt.CoarseTimer)
+        self._timer.start(150)
         self.enabled = True
 
     def setEnabled(self, enabled: bool):
@@ -2554,11 +2555,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     async def _perform_synchronization(self):
         await self._upload_closed_logs()
-        QtCore.QTimer.singleShot(0, lambda: QtWidgets.QMessageBox.information(
-            self,
-            "Bilgi",
-            "Veri senkronizasyonu başarıyla tamamlandı"
-        ))
+        msg = QtWidgets.QMessageBox(self)
+        msg.setIcon(QtWidgets.QMessageBox.Information)
+        msg.setText("Veri senkronizasyonu başarıyla tamamlandı")
+        msg.setWindowTitle("Bilgi")
+        msg.setStandardButtons(QtWidgets.QMessageBox.Ok)
+        msg.show()
+
         asyncio.get_event_loop().create_task(self._refresh_db_symbols())
 
 
