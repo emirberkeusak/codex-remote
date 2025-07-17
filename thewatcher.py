@@ -1849,7 +1849,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # Ask/Bid sekmesini aç
     def open_askbid_tab(self):
         for idx in range(self.tabs.count()):
-            if self.tabs.tabText(idx) == "Ask/Bid - Order Book":
+            if self.tabs.tabText(idx) == "Ask/Bid":
                 self.tabs.setCurrentIndex(idx)
                 return
 
@@ -1874,7 +1874,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(anim_checkbox)
 
         layout.addWidget(self.askbid_table)
-        self.tabs.addTab(page, "Ask/Bid - Order Book")
+        self.tabs.addTab(page, "Ask/Bid")
         self.tabs.setCurrentWidget(page)
 
         # Ensure feeds are running but don't start multiple times
@@ -3606,8 +3606,6 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
                     if DEBUG_BITGET_ORDERBOOK:
                         print(f"[Bitget Orderbook Raw] {raw}")
                     m = json.loads(raw)
-                    if any(k in m for k in ("event", "code", "msg")):
-                        print(f"[Bitget Orderbook] Server message: {m}")
                     if m.get("action") not in ("snapshot", "update"):
                         continue
                     inst = None
@@ -3656,9 +3654,7 @@ async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
                     await ws.send(json.dumps(sub))
                 async for raw in ws:
                     m = json.loads(raw)
-                    if any(k in m for k in ("event", "code", "msg")):
-                        print(f"[Gateio Orderbook] Server message: {m}")
-
+                
                     if m.get("channel") == "futures.order_book" and m.get("event") in ("update", "snapshot", "all"):
                         r = m.get("result") or {}
                         sym = r.get("s") or r.get("contract")
