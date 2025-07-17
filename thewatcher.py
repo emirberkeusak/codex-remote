@@ -3649,9 +3649,9 @@ async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
                         "time": int(time.time()),
                         "channel": "futures.order_book",
                         "event": "subscribe",
-                        # [contract, depth, interval, interval_str]
-                        # Gate.io does not accept batch payloads here
-                        "payload": [sym, 5, 0, "0"],
+                        # Gateio expects all numeric values as strings
+                        # [contract, depth, interval]
+                        "payload": [sym, str(5), "0"],
                     }
                     await ws.send(json.dumps(sub))
                 async for raw in ws:
