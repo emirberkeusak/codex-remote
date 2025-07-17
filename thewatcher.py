@@ -3642,7 +3642,9 @@ async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
         "time": int(time.time()),
         "channel": "futures.order_book",
         "event": "subscribe",
-        "payload": [[s, "5", "0", "0"] for s in symbols],
+        # [contract, depth, interval, interval_str].
+        # Depth and interval must be numeric per docs.
+        "payload": [[s, 5, 0, "0"] for s in symbols],
     }
     url = GATEIO_WS_URL
     while True:
@@ -3653,7 +3655,10 @@ async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
                 await ws.send(json.dumps(sub))
                 async for raw in ws:
                     m = json.loads(raw)
-                    if m.get("channel") == "futures.order_book" and m.get("event") == "update":
+                    if any(k in m for k in ("event", "code", "msg")):
+                        print(f"[Gateio Orderbook] Server message: {m}")
+
+                    if m.get("channel") == "futures.order_book" and m.get("event") in ("update", "snapshot", "all"):
                         r = m.get("result") or {}
                         sym = r.get("s") or r.get("contract")
                         bids = [(float(b[0]), float(b[1])) for b in r.get("bids", [])[:3]]
