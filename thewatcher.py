@@ -1245,13 +1245,14 @@ class ChartWindow(QtWidgets.QMainWindow):
 
 # --- Orderbook window ----------------------------------------------------
 class OrderbookWindow(QtWidgets.QMainWindow):
-    """Display Binance order book levels for a single symbol."""
+    """Display order book levels for a single symbol."""
 
-    def __init__(self, symbol: str, dark_mode: bool = True):
+    def __init__(self, symbol: str, exchange: str, dark_mode: bool = True):
         super().__init__()
         self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
         self.symbol = symbol
-        self.setWindowTitle(f"Binance Orderbook - {symbol}")
+        self.exchange = exchange
+        self.setWindowTitle(f"{exchange} Orderbook - {symbol}")
         self.resize(400, 200)
 
         self.table = QtWidgets.QTableWidget(3, 4)
@@ -1507,6 +1508,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart_windows: list[ChartWindow] = []
          # Açılan orderbook pencerelerini tut
         self.orderbook_windows: list[OrderbookWindow] = []
+        # OKX normalized symbol -> instId mapping
+        self._okx_symbol_map: dict[str, str] = {}
         # WebSocket tasks started for live feeds
         self._ws_tasks: list[asyncio.Task] = []
         self._really_closing = False
@@ -2037,18 +2040,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self.orderbook_dropdown = MultiSelectDropdown()
         sel.addWidget(self.orderbook_dropdown)
 
-        self.btn_generate_orderbook = QtWidgets.QPushButton("Generate")
-        sel.addWidget(self.btn_generate_orderbook)
+        sel.addWidget(QtWidgets.QLabel("OKX Symbols:"))
+        self.okx_orderbook_dropdown = MultiSelectDropdown()
+        sel.addWidget(self.okx_orderbook_dropdown)
+
+        self.btn_generate_binance_orderbook = QtWidgets.QPushButton("Generate")
+        sel.addWidget(self.btn_generate_binance_orderbook)
+
+        self.btn_generate_okx_orderbook = QtWidgets.QPushButton("Generate")
+        sel.addWidget(self.btn_generate_okx_orderbook)
+
         sel.addStretch()
         layout.addLayout(sel)
         layout.addStretch()
 
-        self.btn_generate_orderbook.clicked.connect(self._on_generate_orderbook)
+        self.btn_generate_binance_orderbook.clicked.connect(
+            self._on_generate_binance_orderbook
+        )
+        self.btn_generate_okx_orderbook.clicked.connect(
+            self._on_generate_okx_orderbook
+        )
 
         self.tabs.addTab(page, "Orderbook Selection")
         self.tabs.setCurrentWidget(page)
 
-        asyncio.get_event_loop().create_task(self._refresh_binance_symbols())
+        loop = asyncio.get_event_loop()
+        loop.create_task(self._refresh_binance_symbols())
+        loop.create_task(self._refresh_okx_symbols())
 
         # Yeni grafik sekmesi
     def open_chart_tab(self):
@@ -2255,18 +2273,60 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         syms = await fetch_binance_futures()
         self.orderbook_dropdown.set_items(syms)
+    
+    async def _refresh_okx_symbols(self):
+        if not hasattr(self, "okx_orderbook_dropdown"):
+            return
+        async with aiohttp.ClientSession() as sess:
+            r = await sess.get(OKX_REST_INSTRUMENTS)
+            j = await r.json()
+        self._okx_symbol_map.clear()
+        norm_syms = []
+        for e in j.get("data", []):
+            inst = e.get("instId")
+            if not isinstance(inst, str):
+                continue
+            norm = normalize_symbol(inst)
+            if norm:
+                self._okx_symbol_map[norm] = inst
+                norm_syms.append(norm)
+        self.okx_orderbook_dropdown.set_items(norm_syms)
 
     @QtCore.Slot()
-    def _on_generate_orderbook(self):
+    def _on_generate_binance_orderbook(self):
         if not hasattr(self, "orderbook_dropdown"):
             return
         syms = self.orderbook_dropdown.get_selected_items()
         loop = asyncio.get_event_loop()
         for sym in syms:
-            win = OrderbookWindow(sym, self.dark_mode)
+            win = OrderbookWindow(sym, "Binance", self.dark_mode)
             self.orderbook_windows.append(win)
             task = loop.create_task(
                 publish_binance_orderbook([sym], lambda _s, b, a, w=win: w.update_book(b, a), lambda *_: None)
+            )
+
+            def _cleanup(_=None, w=win, t=task):
+                if w in self.orderbook_windows:
+                    self.orderbook_windows.remove(w)
+                t.cancel()
+
+            win.destroyed.connect(_cleanup)
+            win.show()
+        
+    @QtCore.Slot()
+    def _on_generate_okx_orderbook(self):
+        if not hasattr(self, "okx_orderbook_dropdown"):
+            return
+        syms = self.okx_orderbook_dropdown.get_selected_items()
+        loop = asyncio.get_event_loop()
+        for norm in syms:
+            inst = self._okx_symbol_map.get(norm)
+            if not inst:
+                continue
+            win = OrderbookWindow(norm, "OKX", self.dark_mode)
+            self.orderbook_windows.append(win)
+            task = loop.create_task(
+                publish_okx_orderbook([inst], lambda _s, b, a, w=win: w.update_book(b, a), lambda *_: None)
             )
 
             def _cleanup(_=None, w=win, t=task):
@@ -3282,6 +3342,39 @@ async def publish_binance_orderbook(symbols: list[str], cb, status_cb):
         except Exception as e:
             status_cb("Binance", False)
             print(f"[Binance Orderbook] Error: {e}, reconnecting in 5s")
+            await asyncio.sleep(5)
+
+async def publish_okx_orderbook(symbols: list[str], cb, status_cb):
+    sub = {
+        "op": "subscribe",
+        "args": [{"channel": "books5", "instId": s} for s in symbols],
+    }
+    while True:
+        try:
+            async with websockets.connect(OKX_WS_URL) as ws:
+                status_cb("OKX", True)
+                print("[OKX Orderbook] Connected")
+                await ws.send(json.dumps(sub))
+                async for raw in ws:
+                    m = json.loads(raw)
+                    arg = m.get("arg", {})
+                    if arg.get("channel") != "books5":
+                        continue
+                    for entry in m.get("data", []):
+                        bids = [
+                            (float(p), float(q))
+                            for p, q in entry.get("bids", [])[:3]
+                        ]
+                        asks = [
+                            (float(p), float(q))
+                            for p, q in entry.get("asks", [])[:3]
+                        ]
+                        inst = entry.get("instId")
+                        if inst:
+                            cb(inst, bids, asks)
+        except Exception as e:
+            status_cb("OKX", False)
+            print(f"[OKX Orderbook] Error: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
 
 
