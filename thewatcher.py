@@ -3362,12 +3362,12 @@ async def publish_okx_orderbook(symbols: list[str], cb, status_cb):
                         continue
                     for entry in m.get("data", []):
                         bids = [
-                            (float(p), float(q))
-                            for p, q in entry.get("bids", [])[:3]
+                            (float(level[0]), float(level[1]))
+                            for level in entry.get("bids", [])[:3]
                         ]
                         asks = [
-                            (float(p), float(q))
-                            for p, q in entry.get("asks", [])[:3]
+                            (float(level[0]), float(level[1]))
+                            for level in entry.get("asks", [])[:3]
                         ]
                         inst = entry.get("instId")
                         if inst:
