@@ -2503,7 +2503,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.orderbook_windows.append(win)
             task = loop.create_task(
                 publish_gateio_orderbook(
-                    [raw],
+                    raw,
                     lambda _s, b, a, w=win: w.update_book(b, a),
                     lambda _e, connected, w=win: w.update_status(connected),
                 )
@@ -3637,12 +3637,12 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
             print(f"[Bitget Orderbook] Subscription payload: {json.dumps(sub)}")
             await asyncio.sleep(5)
 
-async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
+async def publish_gateio_orderbook(symbol: str, cb, status_cb):
     sub = {
         "time": int(time.time()),
         "channel": "futures.order_book",
         "event": "subscribe",
-        "payload": [[s, "5", "0", "0"] for s in symbols],
+        "payload": [symbol, "5", "0", "0"],
     }
     url = GATEIO_WS_URL
     while True:
