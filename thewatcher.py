@@ -3554,8 +3554,9 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
                         print(f"[Bitget Orderbook] Server message: {m}")
                     if m.get("action") not in ("snapshot", "update"):
                         continue
+                    inst = None
                     for entry in m.get("data", []):
-                        inst = entry.get("instId")
+                        inst = entry.get("instId") or m.get("arg", {}).get("instId")
                         if not inst:
                             continue
                         bids = [
