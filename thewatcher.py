@@ -1512,6 +1512,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._okx_symbol_map: dict[str, str] = {}
         # Bybit normalized symbol -> raw symbol mapping
         self._bybit_symbol_map: dict[str, str] = {}
+        # Bitget normalized symbol -> raw symbol mapping
+        self._bitget_symbol_map: dict[str, str] = {}
         # WebSocket tasks started for live feeds
         self._ws_tasks: list[asyncio.Task] = []
         self._really_closing = False
@@ -2062,6 +2064,15 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self.bybit_orderbook_dropdown)
         self.btn_generate_bybit_orderbook = QtWidgets.QPushButton("Generate")
         row.addWidget(self.btn_generate_bybit_orderbook)
+
+        row.addSpacing(20)
+
+        # Bitget filter row
+        row.addWidget(QtWidgets.QLabel("Bitget Symbols:"))
+        self.bitget_orderbook_dropdown = MultiSelectDropdown()
+        row.addWidget(self.bitget_orderbook_dropdown)
+        self.btn_generate_bitget_orderbook = QtWidgets.QPushButton("Generate")
+        row.addWidget(self.btn_generate_bitget_orderbook)
         row.addStretch()
 
         layout.addLayout(row)
@@ -2076,6 +2087,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_generate_bybit_orderbook.clicked.connect(
             self._on_generate_bybit_orderbook
         )
+        self.btn_generate_bitget_orderbook.clicked.connect(
+            self._on_generate_bitget_orderbook
+        )
 
         self.tabs.addTab(page, "Orderbook Selection")
         self.tabs.setCurrentWidget(page)
@@ -2084,6 +2098,7 @@ class MainWindow(QtWidgets.QMainWindow):
         loop.create_task(self._refresh_binance_symbols())
         loop.create_task(self._refresh_okx_symbols())
         loop.create_task(self._refresh_bybit_symbols())
+        loop.create_task(self._refresh_bitget_symbols())
 
         # Yeni grafik sekmesi
     def open_chart_tab(self):
@@ -2322,6 +2337,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 norm_syms.append(norm)
         self.bybit_orderbook_dropdown.set_items(norm_syms)
 
+    async def _refresh_bitget_symbols(self):
+        if not hasattr(self, "bitget_orderbook_dropdown"):
+            return
+        syms = await fetch_bitget_swaps()
+        self._bitget_symbol_map.clear()
+        norm_syms = []
+        for s in syms:
+            norm = normalize_symbol(s)
+            if norm:
+                self._bitget_symbol_map[norm] = s
+                norm_syms.append(norm)
+        self.bitget_orderbook_dropdown.set_items(norm_syms)
+
     @QtCore.Slot()
     def _on_generate_binance_orderbook(self):
         if not hasattr(self, "orderbook_dropdown"):
@@ -2388,6 +2416,29 @@ class MainWindow(QtWidgets.QMainWindow):
 
             win.destroyed.connect(_cleanup)
             win.show()
+
+    @QtCore.Slot()
+    def _on_generate_bitget_orderbook(self):
+        if not hasattr(self, "bitget_orderbook_dropdown"):
+            return
+        syms = self.bitget_orderbook_dropdown.get_selected_items()
+        loop = asyncio.get_event_loop()
+        for norm in syms:
+            raw = self._bitget_symbol_map.get(norm, norm)
+            win = OrderbookWindow(norm, "Bitget", self.dark_mode)
+            self.orderbook_windows.append(win)
+            task = loop.create_task(
+                publish_bitget_orderbook([raw], lambda _s, b, a, w=win: w.update_book(b, a), lambda *_: None)
+            )
+
+            def _cleanup(_=None, w=win, t=task):
+                if w in self.orderbook_windows:
+                    self.orderbook_windows.remove(w)
+                t.cancel()
+
+            win.destroyed.connect(_cleanup)
+            win.show()
+
 
     def _copy_selection(self, table):
         """Copy selected cells of the given table to the clipboard."""
@@ -3457,6 +3508,42 @@ async def publish_bybit_orderbook(symbols: list[str], cb, status_cb):
         except Exception as e:
             status_cb("Bybit", False)
             print(f"[Bybit Orderbook] Error: {e}, reconnecting in 5s")
+            await asyncio.sleep(5)
+
+async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
+    sub = {
+        "op": "subscribe",
+        "args": [
+            {"instType": "USDT-FUTURES", "channel": "books5", "instId": s}
+            for s in symbols
+        ],
+    }
+    while True:
+        try:
+            async with websockets.connect(BITGET_WS_URL, ping_interval=20, ping_timeout=10) as ws:
+                status_cb("Bitget", True)
+                print("[Bitget Orderbook] Connected")
+                await ws.send(json.dumps(sub))
+                async for raw in ws:
+                    m = json.loads(raw)
+                    if m.get("action") not in ("snapshot", "update"):
+                        continue
+                    for entry in m.get("data", []):
+                        inst = entry.get("instId")
+                        if not inst:
+                            continue
+                        bids = [
+                            (float(b[0]), float(b[1]))
+                            for b in entry.get("bids", [])[:3]
+                        ]
+                        asks = [
+                            (float(a[0]), float(a[1]))
+                            for a in entry.get("asks", [])[:3]
+                        ]
+                        cb(inst, bids, asks)
+        except Exception as e:
+            status_cb("Bitget", False)
+            print(f"[Bitget Orderbook] Error: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
 
 
