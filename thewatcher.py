@@ -3662,8 +3662,33 @@ async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
                     if m.get("channel") == "futures.order_book" and m.get("event") in ("update", "snapshot", "all"):
                         r = m.get("result") or {}
                         sym = r.get("s") or r.get("contract")
-                        bids = [(float(b[0]), float(b[1])) for b in r.get("bids", [])[:3]]
-                        asks = [(float(a[0]), float(a[1])) for a in r.get("asks", [])[:3]]
+                        bids = []
+                        for item in r.get("bids", []):
+                            if isinstance(item, dict):
+                                price = item.get("p")
+                                size = item.get("s")
+                            else:
+                                price, size = item[0], item[1]
+                            try:
+                                bids.append((float(price), float(size)))
+                            except (TypeError, ValueError):
+                                continue
+                            if len(bids) == 3:
+                                break
+
+                        asks = []
+                        for item in r.get("asks", []):
+                            if isinstance(item, dict):
+                                price = item.get("p")
+                                size = item.get("s")
+                            else:
+                                price, size = item[0], item[1]
+                            try:
+                                asks.append((float(price), float(size)))
+                            except (TypeError, ValueError):
+                                continue
+                            if len(asks) == 3:
+                                break
                         if sym:
                             cb(sym, bids, asks)
         except Exception as e:
