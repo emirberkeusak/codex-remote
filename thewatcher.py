@@ -214,6 +214,8 @@ def normalize_symbol(sym: str) -> str | None:
     s = re.sub(r'(-SWAP|SWAP|-PERP|PERP)$', '', s)
     # remove hyphens
     s = s.replace('-', '')
+    # strip suffixes after USDT (e.g. "BTCUSDT_UMCBL" -> "BTCUSDT")
+    s = re.sub(r'(?<=USDT)_.*$', '', s)
     # must end with USDT
     if not s.endswith("USDT"):
         return None
