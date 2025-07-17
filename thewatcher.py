@@ -1534,6 +1534,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bybit_symbol_map: dict[str, str] = {}
         # Bitget normalized symbol -> raw symbol mapping
         self._bitget_symbol_map: dict[str, str] = {}
+        # Gateio normalized symbol -> raw symbol mapping
+        self._gateio_symbol_map: dict[str, str] = {}
         # WebSocket tasks started for live feeds
         self._ws_tasks: list[asyncio.Task] = []
         self._really_closing = False
@@ -2093,6 +2095,15 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self.bitget_orderbook_dropdown)
         self.btn_generate_bitget_orderbook = QtWidgets.QPushButton("Generate")
         row.addWidget(self.btn_generate_bitget_orderbook)
+
+        row.addSpacing(20)
+
+        # Gateio filter row
+        row.addWidget(QtWidgets.QLabel("Gateio Symbols:"))
+        self.gateio_orderbook_dropdown = MultiSelectDropdown()
+        row.addWidget(self.gateio_orderbook_dropdown)
+        self.btn_generate_gateio_orderbook = QtWidgets.QPushButton("Generate")
+        row.addWidget(self.btn_generate_gateio_orderbook)
         row.addStretch()
 
         layout.addLayout(row)
@@ -2110,6 +2121,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_generate_bitget_orderbook.clicked.connect(
             self._on_generate_bitget_orderbook
         )
+        self.btn_generate_gateio_orderbook.clicked.connect(
+            self._on_generate_gateio_orderbook
+        )
 
         self.tabs.addTab(page, "Orderbook Selection")
         self.tabs.setCurrentWidget(page)
@@ -2119,6 +2133,7 @@ class MainWindow(QtWidgets.QMainWindow):
         loop.create_task(self._refresh_okx_symbols())
         loop.create_task(self._refresh_bybit_symbols())
         loop.create_task(self._refresh_bitget_symbols())
+        loop.create_task(self._refresh_gateio_symbols())
 
         # Yeni grafik sekmesi
     def open_chart_tab(self):
@@ -2370,6 +2385,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 norm_syms.append(norm)
         self.bitget_orderbook_dropdown.set_items(norm_syms)
 
+    async def _refresh_gateio_symbols(self):
+        if not hasattr(self, "gateio_orderbook_dropdown"):
+            return
+        syms = await fetch_gateio_swaps()
+        self._gateio_symbol_map.clear()
+        norm_syms = []
+        for s in syms:
+            norm = normalize_symbol(s)
+            if norm:
+                self._gateio_symbol_map[norm] = s
+                norm_syms.append(norm)
+        self.gateio_orderbook_dropdown.set_items(norm_syms)
+
     @QtCore.Slot()
     def _on_generate_binance_orderbook(self):
         if not hasattr(self, "orderbook_dropdown"):
@@ -2449,6 +2477,32 @@ class MainWindow(QtWidgets.QMainWindow):
             self.orderbook_windows.append(win)
             task = loop.create_task(
                 publish_bitget_orderbook(
+                    [raw],
+                    lambda _s, b, a, w=win: w.update_book(b, a),
+                    lambda _e, connected, w=win: w.update_status(connected),
+                )
+            )
+
+            def _cleanup(_=None, w=win, t=task):
+                if w in self.orderbook_windows:
+                    self.orderbook_windows.remove(w)
+                t.cancel()
+
+            win.destroyed.connect(_cleanup)
+            win.show()
+
+    @QtCore.Slot()
+    def _on_generate_gateio_orderbook(self):
+        if not hasattr(self, "gateio_orderbook_dropdown"):
+            return
+        syms = self.gateio_orderbook_dropdown.get_selected_items()
+        loop = asyncio.get_event_loop()
+        for norm in syms:
+            raw = self._gateio_symbol_map.get(norm, norm)
+            win = OrderbookWindow(norm, "Gateio", self.dark_mode)
+            self.orderbook_windows.append(win)
+            task = loop.create_task(
+                publish_gateio_orderbook(
                     [raw],
                     lambda _s, b, a, w=win: w.update_book(b, a),
                     lambda _e, connected, w=win: w.update_status(connected),
@@ -3581,6 +3635,34 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
             status_cb("Bitget", False)
             print(f"[Bitget Orderbook] Error: {e}, reconnecting in 5s")
             print(f"[Bitget Orderbook] Subscription payload: {json.dumps(sub)}")
+            await asyncio.sleep(5)
+
+async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
+    sub = {
+        "time": int(time.time()),
+        "channel": "futures.order_book",
+        "event": "subscribe",
+        "payload": [[s, "5", "0", "0"] for s in symbols],
+    }
+    url = GATEIO_WS_URL
+    while True:
+        try:
+            async with websockets.connect(url) as ws:
+                status_cb("Gateio", True)
+                print("[Gateio Orderbook] Connected")
+                await ws.send(json.dumps(sub))
+                async for raw in ws:
+                    m = json.loads(raw)
+                    if m.get("channel") == "futures.order_book" and m.get("event") == "update":
+                        r = m.get("result") or {}
+                        sym = r.get("s") or r.get("contract")
+                        bids = [(float(b[0]), float(b[1])) for b in r.get("bids", [])[:3]]
+                        asks = [(float(a[0]), float(a[1])) for a in r.get("asks", [])[:3]]
+                        if sym:
+                            cb(sym, bids, asks)
+        except Exception as e:
+            status_cb("Gateio", False)
+            print(f"[Gateio Orderbook] Error: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
 
 
