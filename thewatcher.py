@@ -1510,6 +1510,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.orderbook_windows: list[OrderbookWindow] = []
         # OKX normalized symbol -> instId mapping
         self._okx_symbol_map: dict[str, str] = {}
+        # Bybit normalized symbol -> raw symbol mapping
+        self._bybit_symbol_map: dict[str, str] = {}
         # WebSocket tasks started for live feeds
         self._ws_tasks: list[asyncio.Task] = []
         self._really_closing = False
@@ -2039,8 +2041,6 @@ class MainWindow(QtWidgets.QMainWindow):
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("Binance Symbols:"))
         self.orderbook_dropdown = MultiSelectDropdown()
-        
-        
         row.addWidget(self.orderbook_dropdown)
         self.btn_generate_binance_orderbook = QtWidgets.QPushButton("Generate")
         row.addWidget(self.btn_generate_binance_orderbook)
@@ -2053,6 +2053,15 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self.okx_orderbook_dropdown)
         self.btn_generate_okx_orderbook = QtWidgets.QPushButton("Generate")
         row.addWidget(self.btn_generate_okx_orderbook)
+
+        row.addSpacing(20)
+
+        # Bybit filter row
+        row.addWidget(QtWidgets.QLabel("Bybit Symbols:"))
+        self.bybit_orderbook_dropdown = MultiSelectDropdown()
+        row.addWidget(self.bybit_orderbook_dropdown)
+        self.btn_generate_bybit_orderbook = QtWidgets.QPushButton("Generate")
+        row.addWidget(self.btn_generate_bybit_orderbook)
         row.addStretch()
 
         layout.addLayout(row)
@@ -2064,6 +2073,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_generate_okx_orderbook.clicked.connect(
             self._on_generate_okx_orderbook
         )
+        self.btn_generate_bybit_orderbook.clicked.connect(
+            self._on_generate_bybit_orderbook
+        )
 
         self.tabs.addTab(page, "Orderbook Selection")
         self.tabs.setCurrentWidget(page)
@@ -2071,6 +2083,7 @@ class MainWindow(QtWidgets.QMainWindow):
         loop = asyncio.get_event_loop()
         loop.create_task(self._refresh_binance_symbols())
         loop.create_task(self._refresh_okx_symbols())
+        loop.create_task(self._refresh_bybit_symbols())
 
         # Yeni grafik sekmesi
     def open_chart_tab(self):
@@ -2295,6 +2308,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._okx_symbol_map[norm] = inst
                 norm_syms.append(norm)
         self.okx_orderbook_dropdown.set_items(norm_syms)
+    
+    async def _refresh_bybit_symbols(self):
+        if not hasattr(self, "bybit_orderbook_dropdown"):
+            return
+        syms = await fetch_bybit_swaps()
+        self._bybit_symbol_map.clear()
+        norm_syms = []
+        for s in syms:
+            norm = normalize_symbol(s)
+            if norm:
+                self._bybit_symbol_map[norm] = s
+                norm_syms.append(norm)
+        self.bybit_orderbook_dropdown.set_items(norm_syms)
 
     @QtCore.Slot()
     def _on_generate_binance_orderbook(self):
@@ -2331,6 +2357,28 @@ class MainWindow(QtWidgets.QMainWindow):
             self.orderbook_windows.append(win)
             task = loop.create_task(
                 publish_okx_orderbook([inst], lambda _s, b, a, w=win: w.update_book(b, a), lambda *_: None)
+            )
+
+            def _cleanup(_=None, w=win, t=task):
+                if w in self.orderbook_windows:
+                    self.orderbook_windows.remove(w)
+                t.cancel()
+
+            win.destroyed.connect(_cleanup)
+            win.show()
+
+    @QtCore.Slot()
+    def _on_generate_bybit_orderbook(self):
+        if not hasattr(self, "bybit_orderbook_dropdown"):
+            return
+        syms = self.bybit_orderbook_dropdown.get_selected_items()
+        loop = asyncio.get_event_loop()
+        for norm in syms:
+            raw = self._bybit_symbol_map.get(norm, norm)
+            win = OrderbookWindow(norm, "Bybit", self.dark_mode)
+            self.orderbook_windows.append(win)
+            task = loop.create_task(
+                publish_bybit_orderbook([raw], lambda _s, b, a, w=win: w.update_book(b, a), lambda *_: None)
             )
 
             def _cleanup(_=None, w=win, t=task):
@@ -3379,6 +3427,36 @@ async def publish_okx_orderbook(symbols: list[str], cb, status_cb):
         except Exception as e:
             status_cb("OKX", False)
             print(f"[OKX Orderbook] Error: {e}, reconnecting in 5s")
+            await asyncio.sleep(5)
+
+async def publish_bybit_orderbook(symbols: list[str], cb, status_cb):
+    topics = [f"orderbook.50.{normalize_pair(s)}" for s in symbols]
+    sub = {"op": "subscribe", "args": topics}
+    while True:
+        try:
+            async with websockets.connect(BYBIT_WS_URL) as ws:
+                status_cb("Bybit", True)
+                print("[Bybit Orderbook] Connected")
+                await ws.send(json.dumps(sub))
+                async for raw in ws:
+                    m = json.loads(raw)
+                    topic = m.get("topic", "")
+                    if not topic.startswith("orderbook.50."):
+                        continue
+                    data = m.get("data", {})
+                    sym = data.get("s")
+                    if not sym:
+                        continue
+                    bids = [
+                        (float(p), float(q)) for p, q in data.get("b", [])[:3]
+                    ]
+                    asks = [
+                        (float(p), float(q)) for p, q in data.get("a", [])[:3]
+                    ]
+                    cb(sym, bids, asks)
+        except Exception as e:
+            status_cb("Bybit", False)
+            print(f"[Bybit Orderbook] Error: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
 
 
