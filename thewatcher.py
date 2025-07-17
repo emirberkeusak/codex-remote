@@ -69,6 +69,7 @@ BYBIT_CLOSE_TIMEOUT  = 10
 
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
+DEBUG_BITGET_ORDERBOOK = False
 
 
 # Supabase configuration
@@ -3548,7 +3549,8 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
                 print("[Bitget Orderbook] Connected")
                 await ws.send(json.dumps(sub))
                 async for raw in ws:
-                    print(f"[Bitget Orderbook Raw] {raw}")
+                    if DEBUG_BITGET_ORDERBOOK:
+                        print(f"[Bitget Orderbook Raw] {raw}")
                     m = json.loads(raw)
                     if any(k in m for k in ("event", "code", "msg")):
                         print(f"[Bitget Orderbook] Server message: {m}")
