@@ -49,7 +49,20 @@ FUNDING_COLUMNS = [
     "Gateio Countdown",
 ]
 
-
+# Funding Rate Diff tablosu kolon başlıkları
+FUNDING_RATE_DIFF_COLUMNS = [
+    "Symbol",
+    "Alım Exch",
+    "Funding Rate",
+    "Ask Derinlik",
+    "3 Kademe Derinlik",
+    "Satım Exch",
+    "Funding Rate",
+    "Bid Derinlik",
+    "3 Kademe Derinlik",
+    "Funding Rate Diff",
+    "Index Price Diff",
+]
 
 BINANCE_URL            = "wss://fstream.binance.com/stream?streams=!markPrice@arr"
 BINANCE_REST_EXCHANGE_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
@@ -994,6 +1007,37 @@ class ClosedArbitrageProxyModel(QtCore.QSortFilterProxyModel):
             result = str(vl) < str(vr)
 
         return result if asc else not result
+# --- Funding Rate Diff table model ---
+class FundingRateDiffModel(QtCore.QAbstractTableModel):
+    """Simple model to display funding rate differences."""
+
+    def __init__(self):
+        super().__init__()
+        self._rows: list[list[str]] = []
+
+    def rowCount(self, parent=QtCore.QModelIndex()):
+        return len(self._rows)
+
+    def columnCount(self, parent=QtCore.QModelIndex()):
+        return len(FUNDING_RATE_DIFF_COLUMNS)
+
+    def headerData(self, section, orientation, role):
+        if orientation == QtCore.Qt.Horizontal and role == QtCore.Qt.DisplayRole:
+            return FUNDING_RATE_DIFF_COLUMNS[section]
+        return None
+
+    def data(self, index, role=QtCore.Qt.DisplayRole):
+        if role == QtCore.Qt.DisplayRole:
+            row = self._rows[index.row()]
+            col = index.column()
+            if col < len(row):
+                return row[col]
+        return None
+
+    def set_rows(self, rows: list[list[str]]):
+        self.beginResetModel()
+        self._rows = rows
+        self.endResetModel()
     
 # --- Simple chart window for bid/ask history ---
 
@@ -2175,7 +2219,32 @@ class MainWindow(QtWidgets.QMainWindow):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(5, 5, 5, 5)
-        layout.addStretch()
+        
+        # First table
+        box1 = QtWidgets.QGroupBox("Funding Rate Diff")
+        v1 = QtWidgets.QVBoxLayout(box1)
+        self.fr_diff_table1 = QtWidgets.QTableView()
+        self.fr_diff_table1.setShowGrid(True)
+        self.fr_diff_table1.verticalHeader().setVisible(False)
+        self.fr_diff_model1 = FundingRateDiffModel()
+        self.fr_diff_table1.setModel(self.fr_diff_model1)
+        header1 = self.fr_diff_table1.horizontalHeader()
+        header1.setSectionResizeMode(QHeaderView.Stretch)
+        v1.addWidget(self.fr_diff_table1)
+        layout.addWidget(box1)
+
+        # Second table
+        box2 = QtWidgets.QGroupBox("Funding Rate Diff")
+        v2 = QtWidgets.QVBoxLayout(box2)
+        self.fr_diff_table2 = QtWidgets.QTableView()
+        self.fr_diff_table2.setShowGrid(True)
+        self.fr_diff_table2.verticalHeader().setVisible(False)
+        self.fr_diff_model2 = FundingRateDiffModel()
+        self.fr_diff_table2.setModel(self.fr_diff_model2)
+        header2 = self.fr_diff_table2.horizontalHeader()
+        header2.setSectionResizeMode(QHeaderView.Stretch)
+        v2.addWidget(self.fr_diff_table2)
+        layout.addWidget(box2)
 
         self.tabs.addTab(page, "Funding Rate Diff")
         self.tabs.setCurrentWidget(page)
