@@ -2036,27 +2036,26 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(5, 5, 5, 5)
 
         # Binance filter row
-        binance_layout = QtWidgets.QHBoxLayout()
-        binance_layout.addWidget(QtWidgets.QLabel("Binance Symbols:"))
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("Binance Symbols:"))
         self.orderbook_dropdown = MultiSelectDropdown()
         
         
-        binance_layout.addWidget(self.orderbook_dropdown)
+        row.addWidget(self.orderbook_dropdown)
         self.btn_generate_binance_orderbook = QtWidgets.QPushButton("Generate")
-        binance_layout.addWidget(self.btn_generate_binance_orderbook)
-        binance_layout.addStretch()
-        layout.addLayout(binance_layout)
+        row.addWidget(self.btn_generate_binance_orderbook)
+
+        row.addSpacing(20)
 
         # OKX filter row
-        okx_layout = QtWidgets.QHBoxLayout()
-        okx_layout.addWidget(QtWidgets.QLabel("OKX Symbols:"))
+        row.addWidget(QtWidgets.QLabel("OKX Symbols:"))
         self.okx_orderbook_dropdown = MultiSelectDropdown()
-        okx_layout.addWidget(self.okx_orderbook_dropdown)
+        row.addWidget(self.okx_orderbook_dropdown)
         self.btn_generate_okx_orderbook = QtWidgets.QPushButton("Generate")
-        okx_layout.addWidget(self.btn_generate_okx_orderbook)
-        okx_layout.addStretch()
-        layout.addLayout(okx_layout)
+        row.addWidget(self.btn_generate_okx_orderbook)
+        row.addStretch()
 
+        layout.addLayout(row)
         layout.addStretch()
 
         self.btn_generate_binance_orderbook.clicked.connect(
