@@ -52,6 +52,7 @@ FUNDING_COLUMNS = [
 
 
 BINANCE_URL            = "wss://fstream.binance.com/stream?streams=!markPrice@arr"
+BINANCE_REST_EXCHANGE_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 OKX_WS_URL             = "wss://ws.okx.com:8443/ws/v5/public"
 OKX_REST_INSTRUMENTS   = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
 BYBIT_WS_URL           = "wss://stream.bybit.com/v5/public/linear"
@@ -695,6 +696,17 @@ async def fetch_gateio_swaps() -> list[str]:
         if isinstance(e.get("contract"), str)
     ]
 
+async def fetch_binance_futures() -> list[str]:
+    async with aiohttp.ClientSession() as s:
+        r = await s.get(BINANCE_REST_EXCHANGE_INFO)
+        j = await r.json()
+    return [
+        e["symbol"]
+        for e in j.get("symbols", [])
+        if e.get("contractType") == "PERPETUAL" and e.get("quoteAsset") == "USDT"
+    ]
+
+
 
 # --- Qt Table Model ---
 class FundingTableModel(QtCore.QAbstractTableModel):
@@ -1231,6 +1243,56 @@ class ChartWindow(QtWidgets.QMainWindow):
 
             self.chart.update()
 
+# --- Orderbook window ----------------------------------------------------
+class OrderbookWindow(QtWidgets.QMainWindow):
+    """Display Binance order book levels for a single symbol."""
+
+    def __init__(self, symbol: str, dark_mode: bool = True):
+        super().__init__()
+        self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+        self.symbol = symbol
+        self.setWindowTitle(f"Binance Orderbook - {symbol}")
+        self.resize(400, 200)
+
+        self.table = QtWidgets.QTableWidget(3, 4)
+        self.table.setHorizontalHeaderLabels([
+            "Ask Price",
+            "Ask Qty (USDT)",
+            "Bid Price",
+            "Bid Qty (USDT)",
+        ])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.setCentralWidget(self.table)
+
+        self.apply_theme(dark_mode)
+
+    def apply_theme(self, dark_mode: bool):
+        bg = "#1e1e1e" if dark_mode else "white"
+        fg = "white" if dark_mode else "black"
+        self.table.setStyleSheet(
+            f"QTableWidget {{ background-color: {bg}; color: {fg}; gridline-color: gray; }}"
+        )
+
+    @QtCore.Slot(list, list)
+    def update_book(self, bids: list[tuple[float, float]], asks: list[tuple[float, float]]):
+        for i in range(3):
+            if i < len(asks):
+                ap, aq = asks[i]
+                self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{ap:.8f}"))
+                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{aq:.4f}"))
+            else:
+                self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(""))
+                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(""))
+
+            if i < len(bids):
+                bp, bq = bids[i]
+                self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(f"{bp:.8f}"))
+                self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(f"{bq:.4f}"))
+            else:
+                self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(""))
+                self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(""))
+
 # --- Background worker for DB download ---
 class DownloadTask(QtCore.QObject, QtCore.QRunnable):
     """Run Supabase fetch and Excel export in a separate thread."""
@@ -1443,6 +1505,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_funding: dict[tuple[str,str], float] = {}
         # Açılan grafik pencerelerini tut
         self.chart_windows: list[ChartWindow] = []
+         # Açılan orderbook pencerelerini tut
+        self.orderbook_windows: list[OrderbookWindow] = []
         # WebSocket tasks started for live feeds
         self._ws_tasks: list[asyncio.Task] = []
         self._really_closing = False
@@ -1967,10 +2031,24 @@ class MainWindow(QtWidgets.QMainWindow):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(5, 5, 5, 5)
+
+        sel = QtWidgets.QHBoxLayout()
+        sel.addWidget(QtWidgets.QLabel("Binance Symbols:"))
+        self.orderbook_dropdown = MultiSelectDropdown()
+        sel.addWidget(self.orderbook_dropdown)
+
+        self.btn_generate_orderbook = QtWidgets.QPushButton("Generate")
+        sel.addWidget(self.btn_generate_orderbook)
+        sel.addStretch()
+        layout.addLayout(sel)
         layout.addStretch()
+
+        self.btn_generate_orderbook.clicked.connect(self._on_generate_orderbook)
 
         self.tabs.addTab(page, "Orderbook Selection")
         self.tabs.setCurrentWidget(page)
+
+        asyncio.get_event_loop().create_task(self._refresh_binance_symbols())
 
         # Yeni grafik sekmesi
     def open_chart_tab(self):
@@ -2172,7 +2250,33 @@ class MainWindow(QtWidgets.QMainWindow):
             text = f"{len(selected)} selected"
         self.db_sell_label.setText(text)
 
-    
+    async def _refresh_binance_symbols(self):
+        if not hasattr(self, "orderbook_dropdown"):
+            return
+        syms = await fetch_binance_futures()
+        self.orderbook_dropdown.set_items(syms)
+
+    @QtCore.Slot()
+    def _on_generate_orderbook(self):
+        if not hasattr(self, "orderbook_dropdown"):
+            return
+        syms = self.orderbook_dropdown.get_selected_items()
+        loop = asyncio.get_event_loop()
+        for sym in syms:
+            win = OrderbookWindow(sym, self.dark_mode)
+            self.orderbook_windows.append(win)
+            task = loop.create_task(
+                publish_binance_orderbook([sym], lambda _s, b, a, w=win: w.update_book(b, a), lambda *_: None)
+            )
+
+            def _cleanup(_=None, w=win, t=task):
+                if w in self.orderbook_windows:
+                    self.orderbook_windows.remove(w)
+                t.cancel()
+
+            win.destroyed.connect(_cleanup)
+            win.show()
+
     def _copy_selection(self, table):
         """Copy selected cells of the given table to the clipboard."""
         indexes = table.selectionModel().selectedIndexes()
@@ -3156,6 +3260,28 @@ async def publish_gateio_askbid(cb, status_cb):
         except Exception as e:
             status_cb("Gateio", False)
             print(f"[Gateio AskBid] Error: {e}, reconnecting in 5s")
+            await asyncio.sleep(5)
+
+async def publish_binance_orderbook(symbols: list[str], cb, status_cb):
+    streams = '/'.join(f"{s.lower()}@depth5@100ms" for s in symbols)
+    url = f"wss://fstream.binance.com/stream?streams={streams}"
+    while True:
+        try:
+            async with websockets.connect(url) as ws:
+                status_cb("Binance", True)
+                print("[Binance Orderbook] Connected")
+                async for raw in ws:
+                    m = json.loads(raw)
+                    data = m.get("data", {})
+                    sym = data.get("s")
+                    if not sym:
+                        continue
+                    bids = [(float(p), float(q)) for p, q in data.get("b", [])[:3]]
+                    asks = [(float(p), float(q)) for p, q in data.get("a", [])[:3]]
+                    cb(sym, bids, asks)
+        except Exception as e:
+            status_cb("Binance", False)
+            print(f"[Binance Orderbook] Error: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
 
 
