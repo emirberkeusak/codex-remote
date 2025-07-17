@@ -1314,6 +1314,95 @@ class OrderbookWindow(QtWidgets.QMainWindow):
         )
         self.status_bar.showMessage(text)
 
+class CrossOrderbookWindow(QtWidgets.QMainWindow):
+    """Display ask side from one exchange and bid side from another."""
+
+    def __init__(self, symbol: str, buy_exchange: str, sell_exchange: str, dark_mode: bool = True):
+        super().__init__()
+        self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+        self.symbol = symbol
+        self.buy_exchange = buy_exchange
+        self.sell_exchange = sell_exchange
+        self.setWindowTitle(f"{buy_exchange} Ask / {sell_exchange} Bid - {symbol}")
+        self.resize(400, 200)
+
+        self.table = QtWidgets.QTableWidget(3, 4)
+        self.table.setHorizontalHeaderLabels([
+            f"{buy_exchange} Ask Price",
+            f"{buy_exchange} Ask Qty (USDT)",
+            f"{sell_exchange} Bid Price",
+            f"{sell_exchange} Bid Qty (USDT)",
+        ])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+
+        self.status_bar = QtWidgets.QStatusBar()
+        container = QtWidgets.QWidget()
+        vbox = QtWidgets.QVBoxLayout(container)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.addWidget(self.table)
+        vbox.addWidget(self.status_bar)
+        self.setCentralWidget(container)
+
+        self._asks: list[tuple[float, float]] = []
+        self._bids: list[tuple[float, float]] = []
+        self._buy_connected = False
+        self._sell_connected = False
+
+        self.apply_theme(dark_mode)
+        self.update_status(buy_exchange, False)
+        self.update_status(sell_exchange, False)
+
+    def apply_theme(self, dark_mode: bool):
+        bg = "#1e1e1e" if dark_mode else "white"
+        fg = "white" if dark_mode else "black"
+        self.table.setStyleSheet(
+            f"QTableWidget {{ background-color: {bg}; color: {fg}; gridline-color: gray; }}"
+        )
+
+    @QtCore.Slot(list, list)
+    def update_buy(self, bids: list[tuple[float, float]], asks: list[tuple[float, float]]):
+        self._asks = asks
+        self._refresh()
+
+    @QtCore.Slot(list, list)
+    def update_sell(self, bids: list[tuple[float, float]], asks: list[tuple[float, float]]):
+        self._bids = bids
+        self._refresh()
+
+    def _refresh(self):
+        for i in range(3):
+            if i < len(self._asks):
+                ap, aq = self._asks[i]
+                self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{ap:.8f}"))
+                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{aq:.4f}"))
+            else:
+                self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(""))
+                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(""))
+
+            if i < len(self._bids):
+                bp, bq = self._bids[i]
+                self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(f"{bp:.8f}"))
+                self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(f"{bq:.4f}"))
+            else:
+                self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(""))
+                self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(""))
+
+    @QtCore.Slot(str, bool)
+    def update_status(self, exchange: str, connected: bool):
+        if exchange == self.buy_exchange:
+            self._buy_connected = connected
+        elif exchange == self.sell_exchange:
+            self._sell_connected = connected
+
+        status = self._buy_connected and self._sell_connected
+        text = "Connected" if status else "Disconnected"
+        color = "lightgreen" if status else "darkred"
+        self.status_bar.setStyleSheet(
+            f"background-color: {color}; color: black; border: 1px solid gray;"
+        )
+        self.status_bar.showMessage(text)
+
 # --- Background worker for DB download ---
 class DownloadTask(QtCore.QObject, QtCore.QRunnable):
     """Run Supabase fetch and Excel export in a separate thread."""
@@ -2107,6 +2196,28 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addStretch()
 
         layout.addLayout(row)
+
+        # Cross exchange orderbook row
+        cross = QtWidgets.QHBoxLayout()
+        cross.addWidget(QtWidgets.QLabel("Buy Exch:"))
+        self.ob_buy_combo = QtWidgets.QComboBox()
+        self.ob_buy_combo.addItems(AB_EXCHANGES)
+        cross.addWidget(self.ob_buy_combo)
+
+        cross.addWidget(QtWidgets.QLabel("Sell Exch:"))
+        self.ob_sell_combo = QtWidgets.QComboBox()
+        self.ob_sell_combo.addItems(AB_EXCHANGES)
+        cross.addWidget(self.ob_sell_combo)
+
+        cross.addWidget(QtWidgets.QLabel("Symbol:"))
+        self.ob_symbol_combo = QtWidgets.QComboBox()
+        self.ob_symbol_combo.setEditable(True)
+        cross.addWidget(self.ob_symbol_combo)
+
+        self.btn_generate_cross_orderbook = QtWidgets.QPushButton("Generate")
+        cross.addWidget(self.btn_generate_cross_orderbook)
+        cross.addStretch()
+        layout.addLayout(cross)
         layout.addStretch()
 
         self.btn_generate_binance_orderbook.clicked.connect(
@@ -2124,6 +2235,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_generate_gateio_orderbook.clicked.connect(
             self._on_generate_gateio_orderbook
         )
+        self.btn_generate_cross_orderbook.clicked.connect(
+            self._on_generate_cross_orderbook
+        )
+
+        def update_cross_symbols():
+            buy = self.ob_buy_combo.currentText()
+            sell = self.ob_sell_combo.currentText()
+            symbols = []
+            for sym, data in self.askbid_model._data.items():
+                if buy in data and sell in data:
+                    symbols.append(sym)
+            self.ob_symbol_combo.clear()
+            self.ob_symbol_combo.addItems(sorted(symbols))
+
+            comp = QtWidgets.QCompleter(self.ob_symbol_combo.model(), self.ob_symbol_combo)
+            comp.setFilterMode(QtCore.Qt.MatchContains)
+            comp.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
+            self.ob_symbol_combo.setCompleter(comp)
+
+        self.ob_buy_combo.currentIndexChanged.connect(update_cross_symbols)
+        self.ob_sell_combo.currentIndexChanged.connect(update_cross_symbols)
+        self.askbid_model.symbolsUpdated.connect(lambda _: update_cross_symbols())
+
+        update_cross_symbols()
 
         self.tabs.addTab(page, "Orderbook Selection")
         self.tabs.setCurrentWidget(page)
@@ -2398,6 +2533,46 @@ class MainWindow(QtWidgets.QMainWindow):
                 norm_syms.append(norm)
         self.gateio_orderbook_dropdown.set_items(norm_syms)
 
+    def _get_raw_symbol(self, exchange: str, norm: str) -> str | None:
+        if exchange == "Binance":
+            return norm
+        if exchange == "OKX":
+            return self._okx_symbol_map.get(norm)
+        if exchange == "Bybit":
+            return self._bybit_symbol_map.get(norm, norm)
+        if exchange == "Bitget":
+            return self._bitget_symbol_map.get(norm, norm)
+        if exchange == "Gateio":
+            return self._gateio_symbol_map.get(norm, norm)
+        return norm
+
+    def _start_orderbook_feed(self, loop, exchange: str, symbol: str, cb, status_cb=None):
+        if not symbol:
+            return None
+        if status_cb is None:
+            status_cb = lambda *_: None
+        if exchange == "Binance":
+            return loop.create_task(
+                publish_binance_orderbook([symbol], lambda _s, b, a: cb(b, a), status_cb)
+            )
+        if exchange == "OKX":
+            return loop.create_task(
+                publish_okx_orderbook([symbol], lambda _s, b, a: cb(b, a), status_cb)
+            )
+        if exchange == "Bybit":
+            return loop.create_task(
+                publish_bybit_orderbook([symbol], lambda _s, b, a: cb(b, a), status_cb)
+            )
+        if exchange == "Bitget":
+            return loop.create_task(
+                publish_bitget_orderbook([symbol], lambda _s, b, a: cb(b, a), status_cb)
+            )
+        if exchange == "Gateio":
+            return loop.create_task(
+                publish_gateio_orderbook([symbol], lambda _s, b, a: cb(b, a), status_cb)
+            )
+        return None
+
     @QtCore.Slot()
     def _on_generate_binance_orderbook(self):
         if not hasattr(self, "orderbook_dropdown"):
@@ -2516,6 +2691,54 @@ class MainWindow(QtWidgets.QMainWindow):
 
             win.destroyed.connect(_cleanup)
             win.show()
+    @QtCore.Slot()
+    def _on_generate_cross_orderbook(self):
+        if not hasattr(self, "ob_symbol_combo"):
+            return
+        symbol = self.ob_symbol_combo.currentText()
+        buy_exch = self.ob_buy_combo.currentText()
+        sell_exch = self.ob_sell_combo.currentText()
+        if not symbol or not buy_exch or not sell_exch:
+            return
+
+        buy_raw = self._get_raw_symbol(buy_exch, symbol)
+        sell_raw = self._get_raw_symbol(sell_exch, symbol)
+        if not buy_raw or not sell_raw:
+            return
+
+        win = CrossOrderbookWindow(symbol, buy_exch, sell_exch, self.dark_mode)
+        self.orderbook_windows.append(win)
+        loop = asyncio.get_event_loop()
+
+        tasks = []
+        tasks.append(
+            self._start_orderbook_feed(
+                loop,
+                buy_exch,
+                buy_raw,
+                lambda b, a, w=win: w.update_buy(b, a),
+                lambda e, c, w=win: w.update_status(e, c),
+            )
+        )
+        tasks.append(
+            self._start_orderbook_feed(
+                loop,
+                sell_exch,
+                sell_raw,
+                lambda b, a, w=win: w.update_sell(b, a),
+                lambda e, c, w=win: w.update_status(e, c),
+            )
+        )
+
+        def _cleanup(_=None, w=win, ts=tasks):
+            if w in self.orderbook_windows:
+                self.orderbook_windows.remove(w)
+            for t in ts:
+                if t:
+                    t.cancel()
+
+        win.destroyed.connect(_cleanup)
+        win.show()
 
 
     def _copy_selection(self, table):
