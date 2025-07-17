@@ -70,7 +70,6 @@ BYBIT_CLOSE_TIMEOUT  = 10
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
 DEBUG_BITGET_ORDERBOOK = False
-DEBUG_GATEIO_ORDERBOOK = False
 
 
 # Supabase configuration
@@ -2504,7 +2503,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.orderbook_windows.append(win)
             task = loop.create_task(
                 publish_gateio_orderbook(
-                    raw,
+                    [raw],
                     lambda _s, b, a, w=win: w.update_book(b, a),
                     lambda _e, connected, w=win: w.update_status(connected),
                 )
@@ -3489,18 +3488,14 @@ async def publish_gateio_askbid(cb, status_cb):
     url = GATEIO_WS_URL
     while True:
         try:
-            async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            async with websockets.connect(url) as ws:
                 status_cb("Gateio", True)
                 print("[Gateio AskBid] Connected")
                 await ws.send(json.dumps(sub))
+
                 async for raw in ws:
-                    if DEBUG_GATEIO_ORDERBOOK:
-                        print(f"[Gateio Orderbook Raw] {raw}")
                     m = json.loads(raw)
-                    if m.get("event") == "error":
-                        print(f"[Gateio Orderbook] Server error: {m}")
-                        continue
-                    if m.get("channel") == "futures.order_book" and m.get("event") in ("update", "all"):
+                    if m.get("channel") == "futures.book_ticker" and m.get("event") == "update":
                         r = m["result"]
                         cb("Gateio", r["s"], float(r["b"]), float(r["a"]))
         except Exception as e:
@@ -3642,12 +3637,12 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
             print(f"[Bitget Orderbook] Subscription payload: {json.dumps(sub)}")
             await asyncio.sleep(5)
 
-async def publish_gateio_orderbook(symbol: str, cb, status_cb):
+async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
     sub = {
         "time": int(time.time()),
         "channel": "futures.order_book",
         "event": "subscribe",
-        "payload": [symbol, "5", "0", "0"],
+        "payload": [[s, "5", "0", "0"] for s in symbols],
     }
     url = GATEIO_WS_URL
     while True:
