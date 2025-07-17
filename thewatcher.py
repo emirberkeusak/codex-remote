@@ -2035,23 +2035,28 @@ class MainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        sel = QtWidgets.QHBoxLayout()
-        sel.addWidget(QtWidgets.QLabel("Binance Symbols:"))
+        # Binance filter row
+        binance_layout = QtWidgets.QHBoxLayout()
+        binance_layout.addWidget(QtWidgets.QLabel("Binance Symbols:"))
         self.orderbook_dropdown = MultiSelectDropdown()
-        sel.addWidget(self.orderbook_dropdown)
-
-        sel.addWidget(QtWidgets.QLabel("OKX Symbols:"))
-        self.okx_orderbook_dropdown = MultiSelectDropdown()
-        sel.addWidget(self.okx_orderbook_dropdown)
-
+        
+        
+        binance_layout.addWidget(self.orderbook_dropdown)
         self.btn_generate_binance_orderbook = QtWidgets.QPushButton("Generate")
-        sel.addWidget(self.btn_generate_binance_orderbook)
+        binance_layout.addWidget(self.btn_generate_binance_orderbook)
+        binance_layout.addStretch()
+        layout.addLayout(binance_layout)
 
+        # OKX filter row
+        okx_layout = QtWidgets.QHBoxLayout()
+        okx_layout.addWidget(QtWidgets.QLabel("OKX Symbols:"))
+        self.okx_orderbook_dropdown = MultiSelectDropdown()
+        okx_layout.addWidget(self.okx_orderbook_dropdown)
         self.btn_generate_okx_orderbook = QtWidgets.QPushButton("Generate")
-        sel.addWidget(self.btn_generate_okx_orderbook)
+        okx_layout.addWidget(self.btn_generate_okx_orderbook)
+        okx_layout.addStretch()
+        layout.addLayout(okx_layout)
 
-        sel.addStretch()
-        layout.addLayout(sel)
         layout.addStretch()
 
         self.btn_generate_binance_orderbook.clicked.connect(
