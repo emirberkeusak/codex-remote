@@ -12,7 +12,7 @@ import pandas as pd
 
 import aiohttp
 import websockets
-from websockets.exceptions import ConnectionClosedError
+from websockets.exceptions import ConnectionClosedError, InvalidStatusCode
 from urllib.parse import urlencode
 
 from PySide6 import QtWidgets, QtCore, QtGui, QtCharts
@@ -1266,7 +1266,15 @@ class OrderbookWindow(QtWidgets.QMainWindow):
         ])
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        self.setCentralWidget(self.table)
+        self.status_bar = QtWidgets.QStatusBar()
+        container = QtWidgets.QWidget()
+        vbox = QtWidgets.QVBoxLayout(container)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.addWidget(self.table)
+        vbox.addWidget(self.status_bar)
+        self.setCentralWidget(container)
+
+        self.update_status(False)
 
         self.apply_theme(dark_mode)
 
@@ -1295,6 +1303,15 @@ class OrderbookWindow(QtWidgets.QMainWindow):
             else:
                 self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(""))
                 self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(""))
+
+    @QtCore.Slot(bool)
+    def update_status(self, connected: bool):
+        text = "Connected" if connected else "Disconnected"
+        color = "lightgreen" if connected else "darkred"
+        self.status_bar.setStyleSheet(
+            f"background-color: {color}; color: black; border: 1px solid gray;"
+        )
+        self.status_bar.showMessage(text)
 
 # --- Background worker for DB download ---
 class DownloadTask(QtCore.QObject, QtCore.QRunnable):
@@ -2430,7 +2447,11 @@ class MainWindow(QtWidgets.QMainWindow):
             win = OrderbookWindow(norm, "Bitget", self.dark_mode)
             self.orderbook_windows.append(win)
             task = loop.create_task(
-                publish_bitget_orderbook([raw], lambda _s, b, a, w=win: w.update_book(b, a), lambda *_: None)
+                publish_bitget_orderbook(
+                    [raw],
+                    lambda _s, b, a, w=win: w.update_book(b, a),
+                    lambda _e, connected, w=win: w.update_status(connected),
+                )
             )
 
             def _cleanup(_=None, w=win, t=task):
@@ -3527,7 +3548,10 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
                 print("[Bitget Orderbook] Connected")
                 await ws.send(json.dumps(sub))
                 async for raw in ws:
+                    print(f"[Bitget Orderbook Raw] {raw}")
                     m = json.loads(raw)
+                    if any(k in m for k in ("event", "code", "msg")):
+                        print(f"[Bitget Orderbook] Server message: {m}")
                     if m.get("action") not in ("snapshot", "update"):
                         continue
                     for entry in m.get("data", []):
@@ -3543,9 +3567,17 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
                             for a in entry.get("asks", [])[:3]
                         ]
                         cb(inst, bids, asks)
+        except InvalidStatusCode as e:
+            status_cb("Bitget", False)
+            print(f"[Bitget Orderbook] Handshake failed: {e.status_code}")
+            print(f"[Bitget Orderbook] Subscription payload: {json.dumps(sub)}")
+            if e.headers:
+                print(f"[Bitget Orderbook] Response headers: {dict(e.headers)}")
+            await asyncio.sleep(5)
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget Orderbook] Error: {e}, reconnecting in 5s")
+            print(f"[Bitget Orderbook] Subscription payload: {json.dumps(sub)}")
             await asyncio.sleep(5)
 
 
