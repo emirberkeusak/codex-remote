@@ -3638,21 +3638,22 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
             await asyncio.sleep(5)
 
 async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
-    sub = {
-        "time": int(time.time()),
-        "channel": "futures.order_book",
-        "event": "subscribe",
-        # [contract, depth, interval, interval_str].
-        # Depth and interval must be numeric per docs.
-        "payload": [[s, 5, 0, "0"] for s in symbols],
-    }
     url = GATEIO_WS_URL
     while True:
         try:
             async with websockets.connect(url) as ws:
                 status_cb("Gateio", True)
                 print("[Gateio Orderbook] Connected")
-                await ws.send(json.dumps(sub))
+                for sym in symbols:
+                    sub = {
+                        "time": int(time.time()),
+                        "channel": "futures.order_book",
+                        "event": "subscribe",
+                        # [contract, depth, interval, interval_str]
+                        # Gate.io does not accept batch payloads here
+                        "payload": [sym, 5, 0, "0"],
+                    }
+                    await ws.send(json.dumps(sub))
                 async for raw in ws:
                     m = json.loads(raw)
                     if any(k in m for k in ("event", "code", "msg")):
