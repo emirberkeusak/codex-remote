@@ -1291,16 +1291,36 @@ class OrderbookWindow(QtWidgets.QMainWindow):
         for i in range(3):
             if i < len(asks):
                 ap, aq = asks[i]
-                self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{ap:.8f}"))
-                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{aq:.4f}"))
+                ask_val = ap * aq
+                item_price = self.table.item(i, 0)
+                if item_price is None:
+                    item_price = QtWidgets.QTableWidgetItem()
+                    self.table.setItem(i, 0, item_price)
+                item_price.setText(f"{ap:.8f}")
+
+                item_qty = self.table.item(i, 1)
+                if item_qty is None:
+                    item_qty = QtWidgets.QTableWidgetItem()
+                    self.table.setItem(i, 1, item_qty)
+                item_qty.setText(f"{ask_val:.4f}")
             else:
                 self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(""))
                 self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(""))
 
             if i < len(bids):
                 bp, bq = bids[i]
-                self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(f"{bp:.8f}"))
-                self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(f"{bq:.4f}"))
+                bid_val = bp * bq
+                item_price = self.table.item(i, 2)
+                if item_price is None:
+                    item_price = QtWidgets.QTableWidgetItem()
+                    self.table.setItem(i, 2, item_price)
+                item_price.setText(f"{bp:.8f}")
+
+                item_qty = self.table.item(i, 3)
+                if item_qty is None:
+                    item_qty = QtWidgets.QTableWidgetItem()
+                    self.table.setItem(i, 3, item_qty)
+                item_qty.setText(f"{bid_val:.4f}")
             else:
                 self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(""))
                 self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(""))
@@ -1374,16 +1394,36 @@ class CrossOrderbookWindow(QtWidgets.QMainWindow):
         for i in range(3):
             if i < len(self._asks):
                 ap, aq = self._asks[i]
-                self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{ap:.8f}"))
-                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{aq:.4f}"))
+                ask_val = ap * aq
+                item_price = self.table.item(i, 0)
+                if item_price is None:
+                    item_price = QtWidgets.QTableWidgetItem()
+                    self.table.setItem(i, 0, item_price)
+                item_price.setText(f"{ap:.8f}")
+
+                item_qty = self.table.item(i, 1)
+                if item_qty is None:
+                    item_qty = QtWidgets.QTableWidgetItem()
+                    self.table.setItem(i, 1, item_qty)
+                item_qty.setText(f"{ask_val:.4f}")
             else:
                 self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(""))
                 self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(""))
 
             if i < len(self._bids):
                 bp, bq = self._bids[i]
-                self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(f"{bp:.8f}"))
-                self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(f"{bq:.4f}"))
+                bid_val = bp * bq
+                item_price = self.table.item(i, 2)
+                if item_price is None:
+                    item_price = QtWidgets.QTableWidgetItem()
+                    self.table.setItem(i, 2, item_price)
+                item_price.setText(f"{bp:.8f}")
+
+                item_qty = self.table.item(i, 3)
+                if item_qty is None:
+                    item_qty = QtWidgets.QTableWidgetItem()
+                    self.table.setItem(i, 3, item_qty)
+                item_qty.setText(f"{bid_val:.4f}")
             else:
                 self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(""))
                 self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(""))
