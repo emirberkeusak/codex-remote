@@ -1502,8 +1502,8 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_layout.addWidget(self.btn_funding)
         btn_layout.addWidget(self.btn_order)
         btn_layout.addWidget(self.btn_arb)
-        btn_layout.addWidget(self.btn_orderbook_sel)
         btn_layout.addWidget(self.btn_fr_diff)
+        btn_layout.addWidget(self.btn_orderbook_sel)
         btn_layout.addWidget(self.btn_chart)
         btn_layout.addWidget(self.btn_db)
 
