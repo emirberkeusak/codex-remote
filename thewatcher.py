@@ -1871,6 +1871,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._arb_timer.timeout.connect(self._start_arbitrage_worker)
         self._arb_timer.start(500)
 
+        # Funding Rate Diff refresh timer (1s, initially stopped)
+        self._fr_diff_params1 = None  # type: dict | None
+        self._fr_diff_params2 = None  # type: dict | None
+        self._fr_diff_timer = QtCore.QTimer(self)
+        self._fr_diff_timer.setInterval(1000)
+        self._fr_diff_timer.timeout.connect(self._refresh_fr_diff_models)
+
         # Başlangıç teması
         self.toggle_theme(self.btn_toggle_theme.isChecked())
 
@@ -3663,6 +3670,23 @@ class MainWindow(QtWidgets.QMainWindow):
                 ])
 
         return rows
+    
+    def _refresh_fr_diff_models(self):
+        """Refresh Funding Rate Diff tables using stored parameters."""
+        if not hasattr(self, "fr_diff_model1"):
+            return
+
+        if self._fr_diff_params1:
+            rows1 = self._compute_fr_diff_rows(**self._fr_diff_params1)
+        else:
+            rows1 = []
+        self.fr_diff_model1.set_rows(rows1)
+
+        if self._fr_diff_params2:
+            rows2 = self._compute_fr_diff_rows(**self._fr_diff_params2)
+        else:
+            rows2 = []
+        self.fr_diff_model2.set_rows(rows2)
 
     def _update_fr_diff_models(self):
         """Recompute both FundingRateDiffModel tables from current data."""
@@ -3676,15 +3700,14 @@ class MainWindow(QtWidgets.QMainWindow):
         ask1 = _parse_float(self.max_ask_depth_input1.text())
 
         if min1 is None and max1 is None and cd1 is None and ask1 is None:
-            rows1 = []
+            self._fr_diff_params1 = None
         else:
-            rows1 = self._compute_fr_diff_rows(
-                min_fr=min1,
-                max_fr=max1,
-                max_cd=cd1,
-                max_ask=ask1,
-            )
-        self.fr_diff_model1.set_rows(rows1)
+            self._fr_diff_params1 = {
+                "min_fr": min1,
+                "max_fr": max1,
+                "max_cd": cd1,
+                "max_ask": ask1,
+            }
 
         symbols2: set[str] | None = None
         if hasattr(self, "fr_symbols_dropdown2"):
@@ -3701,16 +3724,22 @@ class MainWindow(QtWidgets.QMainWindow):
             min2 is None and max2 is None and cd2 is None and ask2 is None
             and not symbols2
         ):
-            rows2 = []
+            self._fr_diff_params2 = None
         else:
-            rows2 = self._compute_fr_diff_rows(
-                symbols=symbols2,
-                min_fr=min2,
-                max_fr=max2,
-                max_cd=cd2,
-                max_ask=ask2,
-            )
-        self.fr_diff_model2.set_rows(rows2)
+            self._fr_diff_params2 = {
+                "symbols": symbols2,
+                "min_fr": min2,
+                "max_fr": max2,
+                "max_cd": cd2,
+                "max_ask": ask2,
+            }
+
+        self._refresh_fr_diff_models()
+        if self._fr_diff_params1 or self._fr_diff_params2:
+            if not self._fr_diff_timer.isActive():
+                self._fr_diff_timer.start()
+        else:
+            self._fr_diff_timer.stop()
 
     async def _upload_closed_logs(self) -> bool:
         df = self._proxy_to_dataframe(self.closed_proxy)
