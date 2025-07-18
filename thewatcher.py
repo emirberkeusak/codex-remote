@@ -2363,7 +2363,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fr_symbols_dropdown2.selectionChanged.connect(
             self.fr_diff_proxy2.set_symbol_filter
         )
-        self.fr_symbols_dropdown2.selectionChanged.connect(self._update_fr_diff_models)
         layout.addWidget(box2)
 
         self.tabs.addTab(page, "Funding Rate Diff")
@@ -2378,8 +2377,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_generate_cd2a.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_ask_depth2.clicked.connect(self._update_fr_diff_models)
 
-        # Initial population
-        self._update_fr_diff_models()
 
     def open_orderbook_selection_tab(self):
         for i in range(self.tabs.count()):
@@ -3357,8 +3354,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     win.add_point(exchange, symbol, bid, ask)
         self._askbid_data.clear()
         self._askbid_timer.stop()
-        if hasattr(self, "fr_diff_model1"):
-            self._update_fr_diff_models()
+
 
     @QtCore.Slot()
     @QtCore.Slot(QtCore.QModelIndex)
@@ -3551,12 +3547,20 @@ class MainWindow(QtWidgets.QMainWindow):
         if not hasattr(self, "fr_diff_model1"):
             return
 
-        rows1 = self._compute_fr_diff_rows(
-            min_fr=_parse_float(self.min_fr_input1a.text()),
-            max_fr=_parse_float(self.max_fr_input1a.text()),
-            max_cd=_parse_duration(self.max_cd_input1a.text()),
-            max_ask=_parse_float(self.max_ask_depth_input1.text()),
-        )
+        min1 = _parse_float(self.min_fr_input1a.text())
+        max1 = _parse_float(self.max_fr_input1a.text())
+        cd1  = _parse_duration(self.max_cd_input1a.text())
+        ask1 = _parse_float(self.max_ask_depth_input1.text())
+
+        if min1 is None and max1 is None and cd1 is None and ask1 is None:
+            rows1 = []
+        else:
+            rows1 = self._compute_fr_diff_rows(
+                min_fr=min1,
+                max_fr=max1,
+                max_cd=cd1,
+                max_ask=ask1,
+            )
         self.fr_diff_model1.set_rows(rows1)
 
         symbols2: set[str] | None = None
@@ -3565,13 +3569,24 @@ class MainWindow(QtWidgets.QMainWindow):
             if sel and len(sel) < len(self.fr_symbols_dropdown2._items):
                 symbols2 = set(sel)
 
-        rows2 = self._compute_fr_diff_rows(
-            symbols=symbols2,
-            min_fr=_parse_float(self.min_fr_input2a.text()),
-            max_fr=_parse_float(self.max_fr_input2a.text()),
-            max_cd=_parse_duration(self.max_cd_input2a.text()),
-            max_ask=_parse_float(self.max_ask_depth_input2.text()),
-        )
+        min2 = _parse_float(self.min_fr_input2a.text())
+        max2 = _parse_float(self.max_fr_input2a.text())
+        cd2  = _parse_duration(self.max_cd_input2a.text())
+        ask2 = _parse_float(self.max_ask_depth_input2.text())
+
+        if (
+            min2 is None and max2 is None and cd2 is None and ask2 is None
+            and not symbols2
+        ):
+            rows2 = []
+        else:
+            rows2 = self._compute_fr_diff_rows(
+                symbols=symbols2,
+                min_fr=min2,
+                max_fr=max2,
+                max_cd=cd2,
+                max_ask=ask2,
+            )
         self.fr_diff_model2.set_rows(rows2)
 
     async def _upload_closed_logs(self) -> bool:
@@ -4316,9 +4331,6 @@ def main():
                 idx = window.arb_model.index(row, col)
                 window.arb_model.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
 
-            # Refresh funding rate diff tables
-            if hasattr(window, "fr_diff_model1"):
-                window._update_fr_diff_models()
 
         # WebSocket’leri sarılmış callback ile başlat
         window._ws_tasks.append(loop.create_task(publish_binance (fr_cb, window._update_status_fr)))
