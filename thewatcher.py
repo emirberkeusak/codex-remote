@@ -754,6 +754,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         # (symbol, exchange) -> next funding timestamp
         self._next_funding_ts: dict[tuple[str, str], float] = {}
         self.delegate  = None
+        self._mod_counter = 0                   # incremented on data updates
 
         # timer for countdown updates
         self._timer = QtCore.QTimer(self)
@@ -811,6 +812,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         self._previous[key] = rounded
 
         rate_str = f"{rounded:.4f}"
+        modified = False
         # insert new row if needed
         if sym not in self._data:
             self.beginInsertRows(QtCore.QModelIndex(),
@@ -822,8 +824,11 @@ class FundingTableModel(QtCore.QAbstractTableModel):
             
             # Emit signal for new symbol
             self.symbolsUpdated.emit(self._symbols.copy())
+            modified = True
 
         # update value
+        if self._data.get(sym, {}).get(exchange) != rate_str:
+            modified = True
         self._data[sym][exchange] = rate_str
         row = self._symbols.index(sym)
         col = FUNDING_COLUMNS.index(exchange)
@@ -833,6 +838,8 @@ class FundingTableModel(QtCore.QAbstractTableModel):
 
         # store next funding timestamp for supported exchanges and update countdown
         if next_ts is not None and f"{exchange} Countdown" in FUNDING_COLUMNS:
+            if self._next_funding_ts.get((sym, exchange)) != next_ts:
+                modified = True
             self._next_funding_ts[(sym, exchange)] = next_ts
             c_col = FUNDING_COLUMNS.index(f"{exchange} Countdown")
             c_idx = self.index(row, c_col)
@@ -844,6 +851,9 @@ class FundingTableModel(QtCore.QAbstractTableModel):
             proxy = view.model()
             view_idx = proxy.mapFromSource(src_idx)
             self.delegate.mark_changed(view_idx, positive)
+
+        if modified:
+            self._mod_counter += 1
 
     def _update_countdowns(self):
         for exch in ("Binance", "OKX", "Bybit", "Bitget", "Gateio"):
@@ -867,6 +877,7 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         self._data    = {}
         self._prev    = {}           # { (sym, exch, side): float } , side in {"bid","ask"}
         self.delegate = None
+        self._mod_counter = 0        # incremented on data updates
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._symbols)
@@ -915,7 +926,8 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         sym = normalize_symbol(raw_symbol)
         if not sym:
             return
-
+        
+        modified = False
         # 2) Yeni sembol ekle
         if sym not in self._data:
             self.beginInsertRows(QtCore.QModelIndex(),
@@ -925,14 +937,20 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
             self._data[sym] = {}
             self.endInsertRows()
             self.symbolsUpdated.emit(self._symbols.copy())
+            modified = True
 
         # 3) Önceki değerleri al
         key_bid = (sym, exchange, "bid")
         key_ask = (sym, exchange, "ask")
         prev_bid = self._prev.get(key_bid)
         prev_ask = self._prev.get(key_ask)
+        prev_entry = self._data.get(sym, {}).get(exchange)
 
         # 4) Yeni değerleri sakla
+        if prev_bid != bid or prev_ask != ask:
+            modified = True
+        if prev_entry and (prev_entry[2] != bid_qty or prev_entry[3] != ask_qty):
+            modified = True
         self._prev[key_bid] = bid
         self._prev[key_ask] = ask
         self._data[sym][exchange] = (bid, ask, bid_qty, ask_qty)
@@ -959,6 +977,9 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
                 self.delegate.mark_changed(v_ask, True)   # ask → yeşil
             if prev_bid is not None and bid != prev_bid:
                 self.delegate.mark_changed(v_bid, False)  # bid → kırmızı
+
+        if modified:
+            self._mod_counter += 1
 
 
 class ArbitrageFilterProxyModel(QtCore.QSortFilterProxyModel):
@@ -1048,6 +1069,8 @@ class FundingRateDiffModel(QtCore.QAbstractTableModel):
         super().__init__()
         self._rows: list[list[str]] = []
         self._symbols: list[str] = []
+        # (symbol, exchange) -> row index mapping for quick updates
+        self._row_map: dict[tuple[str, str], int] = {}
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._rows)
@@ -1068,12 +1091,43 @@ class FundingRateDiffModel(QtCore.QAbstractTableModel):
                 return row[col]
         return None
 
-    def set_rows(self, rows: list[list[str]]):
-        self.beginResetModel()
-        self._rows = rows
-        self._symbols = [r[0] for r in rows]
-        self.endResetModel()
-        self.symbolsUpdated.emit(self._symbols.copy())
+    def update_rows(self, rows: list[list[str]]):
+        """Update rows incrementally instead of resetting the model."""
+        new_map: dict[tuple[str, str], list[str]] = {
+            (r[0], r[1]): r for r in rows
+        }
+
+        # Remove rows that no longer exist
+        to_remove = [pair for pair in self._row_map if pair not in new_map]
+        for pair in to_remove:
+            idx = self._row_map.pop(pair)
+            self.beginRemoveRows(QtCore.QModelIndex(), idx, idx)
+            self._rows.pop(idx)
+            self.endRemoveRows()
+            for p, i in list(self._row_map.items()):
+                if i > idx:
+                    self._row_map[p] = i - 1
+
+        # Insert new rows and update existing ones
+        for pair, row in new_map.items():
+            if pair in self._row_map:
+                idx = self._row_map[pair]
+                if self._rows[idx] != row:
+                    self._rows[idx] = row
+                    tl = self.index(idx, 0)
+                    br = self.index(idx, len(row) - 1)
+                    self.dataChanged.emit(tl, br, [QtCore.Qt.DisplayRole])
+            else:
+                idx = len(self._rows)
+                self.beginInsertRows(QtCore.QModelIndex(), idx, idx)
+                self._rows.append(row)
+                self._row_map[pair] = idx
+                self.endInsertRows()
+
+        new_symbols = [r[0] for r in self._rows]
+        if new_symbols != self._symbols:
+            self._symbols = new_symbols
+            self.symbolsUpdated.emit(self._symbols.copy())
     
 # --- Simple chart window for bid/ask history ---
 
@@ -1745,6 +1799,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.orderbook_windows: list[OrderbookWindow] = []
         # Orderbook depth data (top 3 levels per exchange)
         self.orderbook_data: dict[str, dict[str, tuple[list[tuple[float, float]], list[tuple[float, float]]]]] = {}
+        self._orderbook_counter = 0
         self._orderbook_task_scheduled = False
         # OKX normalized symbol -> instId mapping
         self._okx_symbol_map: dict[str, str] = {}
@@ -1846,7 +1901,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.setDocumentMode(True)
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
-        self.tabs.tabCloseRequested.connect(lambda i: self.tabs.removeTab(i))
+        self.tabs.tabCloseRequested.connect(self._on_tab_closed)
         vlayout.addWidget(self.tabs, stretch=1)
 
         # Tabloları önceden hazırla ancak başlangıçta sekme açma
@@ -1877,9 +1932,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._fr_diff_timer = QtCore.QTimer(self)
         self._fr_diff_timer.setInterval(1000)
         self._fr_diff_timer.timeout.connect(self._refresh_fr_diff_models)
+        self._fr_diff_last_funding = -1
+        self._fr_diff_last_askbid = -1
+        self._fr_diff_last_orderbook = -1
 
         # Başlangıç teması
         self.toggle_theme(self.btn_toggle_theme.isChecked())
+
+    @QtCore.Slot(int)
+    def _on_tab_closed(self, index: int):
+        if self.tabs.tabText(index) == "Funding Rate Diff":
+            self._fr_diff_timer.stop()
+            self._fr_diff_params1 = None
+            self._fr_diff_params2 = None
+        self.tabs.removeTab(index)
 
 
     # Status güncelleyiciler
@@ -3448,6 +3514,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if norm not in self.orderbook_data:
             self.orderbook_data[norm] = {}
         self.orderbook_data[norm][exchange] = (bids, asks)
+        self._orderbook_counter += 1
 
     # ─── ~30 Hz’de dict’i boşaltıp tabloyu güncelleyen metod ───
     def _flush_askbid_data(self):
@@ -3675,18 +3742,40 @@ class MainWindow(QtWidgets.QMainWindow):
         """Refresh Funding Rate Diff tables using stored parameters."""
         if not hasattr(self, "fr_diff_model1"):
             return
+        
+        funding_c = getattr(self.model, "_mod_counter", 0)
+        askbid_c = getattr(self.askbid_model, "_mod_counter", 0)
+        ob_c = self._orderbook_counter
+
+        if (
+            funding_c == self._fr_diff_last_funding
+            and askbid_c == self._fr_diff_last_askbid
+            and ob_c == self._fr_diff_last_orderbook
+        ):
+            return
+
 
         if self._fr_diff_params1:
             rows1 = self._compute_fr_diff_rows(**self._fr_diff_params1)
         else:
             rows1 = []
-        self.fr_diff_model1.set_rows(rows1)
+        self.fr_diff_model1.update_rows(rows1)
 
         if self._fr_diff_params2:
             rows2 = self._compute_fr_diff_rows(**self._fr_diff_params2)
         else:
             rows2 = []
-        self.fr_diff_model2.set_rows(rows2)
+        self.fr_diff_model2.update_rows(rows2)
+
+        self._fr_diff_last_funding = funding_c
+        self._fr_diff_last_askbid = askbid_c
+        self._fr_diff_last_orderbook = ob_c
+
+    def _reset_fr_diff_counters(self) -> None:
+        """Force next refresh to recompute tables."""
+        self._fr_diff_last_funding = -1
+        self._fr_diff_last_askbid = -1
+        self._fr_diff_last_orderbook = -1
 
     def _update_fr_diff_models(self):
         """Recompute both FundingRateDiffModel tables from current data."""
@@ -3733,7 +3822,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 "max_cd": cd2,
                 "max_ask": ask2,
             }
-
+        
+        self._reset_fr_diff_counters()
         self._refresh_fr_diff_models()
         if self._fr_diff_params1 or self._fr_diff_params2:
             if not self._fr_diff_timer.isActive():
