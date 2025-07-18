@@ -2302,6 +2302,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
         v1.addLayout(depth1)
 
+        diff1 = QtWidgets.QHBoxLayout()
+        self.fr_diff_input1 = QtWidgets.QLineEdit()
+        self.fr_diff_input1.setFixedWidth(80)
+        diff1.addWidget(QtWidgets.QLabel("Funding Rate Diff:"))
+        diff1.addWidget(self.fr_diff_input1)
+        self.btn_generate_fr_diff_val1 = QtWidgets.QPushButton("Generate")
+        diff1.addWidget(self.btn_generate_fr_diff_val1)
+
+        diff1.addSpacing(20)
+
+        self.index_price_diff_input1 = QtWidgets.QLineEdit()
+        self.index_price_diff_input1.setFixedWidth(80)
+        diff1.addWidget(QtWidgets.QLabel("Index Price Diff:"))
+        diff1.addWidget(self.index_price_diff_input1)
+        self.btn_generate_index_price_diff1 = QtWidgets.QPushButton("Generate")
+        diff1.addWidget(self.btn_generate_index_price_diff1)
+        diff1.addStretch()
+
+        v1.addLayout(diff1)
+
         self.fr_diff_table1 = QtWidgets.QTableView()
         self.fr_diff_table1.setShowGrid(True)
         self.fr_diff_table1.verticalHeader().setVisible(False)
@@ -2391,6 +2411,26 @@ class MainWindow(QtWidgets.QMainWindow):
         depth2.addStretch()
 
         v2.addLayout(depth2)
+
+        diff2 = QtWidgets.QHBoxLayout()
+        self.fr_diff_input2 = QtWidgets.QLineEdit()
+        self.fr_diff_input2.setFixedWidth(80)
+        diff2.addWidget(QtWidgets.QLabel("Funding Rate Diff:"))
+        diff2.addWidget(self.fr_diff_input2)
+        self.btn_generate_fr_diff_val2 = QtWidgets.QPushButton("Generate")
+        diff2.addWidget(self.btn_generate_fr_diff_val2)
+
+        diff2.addSpacing(20)
+
+        self.index_price_diff_input2 = QtWidgets.QLineEdit()
+        self.index_price_diff_input2.setFixedWidth(80)
+        diff2.addWidget(QtWidgets.QLabel("Index Price Diff:"))
+        diff2.addWidget(self.index_price_diff_input2)
+        self.btn_generate_index_price_diff2 = QtWidgets.QPushButton("Generate")
+        diff2.addWidget(self.btn_generate_index_price_diff2)
+        diff2.addStretch()
+
+        v2.addLayout(diff2)
 
         self.fr_diff_table2 = QtWidgets.QTableView()
         self.fr_diff_table2.setShowGrid(True)
