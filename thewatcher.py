@@ -54,10 +54,12 @@ FUNDING_RATE_DIFF_COLUMNS = [
     "Symbol",
     "Alım Exch",
     "Funding Rate",
+    "Countdown",
     "Ask Derinlik",
     "3 Kademe Derinlik",
     "Satım Exch",
     "Funding Rate",
+    "Countdown",
     "Bid Derinlik",
     "3 Kademe Derinlik",
     "Funding Rate Diff",
@@ -2220,9 +2222,42 @@ class MainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(5, 5, 5, 5)
         
-        # First table
+        # First table and controls
         box1 = QtWidgets.QGroupBox("Funding Rate Diff")
         v1 = QtWidgets.QVBoxLayout(box1)
+
+        ctrl1 = QtWidgets.QHBoxLayout()
+        self.max_fr_input1a = QtWidgets.QLineEdit()
+        self.max_fr_input1a.setFixedWidth(80)
+        ctrl1.addWidget(QtWidgets.QLabel("Max Funding Rate:"))
+        ctrl1.addWidget(self.max_fr_input1a)
+
+        self.min_fr_input1a = QtWidgets.QLineEdit()
+        self.min_fr_input1a.setFixedWidth(80)
+        ctrl1.addWidget(QtWidgets.QLabel("Min Funding Rate:"))
+        ctrl1.addWidget(self.min_fr_input1a)
+
+        self.btn_generate_fr_diff1a = QtWidgets.QPushButton("Generate")
+        ctrl1.addWidget(self.btn_generate_fr_diff1a)
+
+        ctrl1.addSpacing(20)
+
+        self.max_fr_input1b = QtWidgets.QLineEdit()
+        self.max_fr_input1b.setFixedWidth(80)
+        ctrl1.addWidget(QtWidgets.QLabel("Max Funding Rate:"))
+        ctrl1.addWidget(self.max_fr_input1b)
+
+        self.min_fr_input1b = QtWidgets.QLineEdit()
+        self.min_fr_input1b.setFixedWidth(80)
+        ctrl1.addWidget(QtWidgets.QLabel("Min Funding Rate:"))
+        ctrl1.addWidget(self.min_fr_input1b)
+
+        self.btn_generate_fr_diff1b = QtWidgets.QPushButton("Generate")
+        ctrl1.addWidget(self.btn_generate_fr_diff1b)
+        ctrl1.addStretch()
+
+        v1.addLayout(ctrl1)
+
         self.fr_diff_table1 = QtWidgets.QTableView()
         self.fr_diff_table1.setShowGrid(True)
         self.fr_diff_table1.verticalHeader().setVisible(False)
@@ -2233,9 +2268,42 @@ class MainWindow(QtWidgets.QMainWindow):
         v1.addWidget(self.fr_diff_table1)
         layout.addWidget(box1)
 
-        # Second table
+        # Second table and controls
         box2 = QtWidgets.QGroupBox("Funding Rate Diff")
         v2 = QtWidgets.QVBoxLayout(box2)
+
+        ctrl2 = QtWidgets.QHBoxLayout()
+        self.max_fr_input2a = QtWidgets.QLineEdit()
+        self.max_fr_input2a.setFixedWidth(80)
+        ctrl2.addWidget(QtWidgets.QLabel("Max Funding Rate:"))
+        ctrl2.addWidget(self.max_fr_input2a)
+
+        self.min_fr_input2a = QtWidgets.QLineEdit()
+        self.min_fr_input2a.setFixedWidth(80)
+        ctrl2.addWidget(QtWidgets.QLabel("Min Funding Rate:"))
+        ctrl2.addWidget(self.min_fr_input2a)
+
+        self.btn_generate_fr_diff2a = QtWidgets.QPushButton("Generate")
+        ctrl2.addWidget(self.btn_generate_fr_diff2a)
+
+        ctrl2.addSpacing(20)
+
+        self.max_fr_input2b = QtWidgets.QLineEdit()
+        self.max_fr_input2b.setFixedWidth(80)
+        ctrl2.addWidget(QtWidgets.QLabel("Max Funding Rate:"))
+        ctrl2.addWidget(self.max_fr_input2b)
+
+        self.min_fr_input2b = QtWidgets.QLineEdit()
+        self.min_fr_input2b.setFixedWidth(80)
+        ctrl2.addWidget(QtWidgets.QLabel("Min Funding Rate:"))
+        ctrl2.addWidget(self.min_fr_input2b)
+
+        self.btn_generate_fr_diff2b = QtWidgets.QPushButton("Generate")
+        ctrl2.addWidget(self.btn_generate_fr_diff2b)
+        ctrl2.addStretch()
+
+        v2.addLayout(ctrl2)
+        
         self.fr_diff_table2 = QtWidgets.QTableView()
         self.fr_diff_table2.setShowGrid(True)
         self.fr_diff_table2.verticalHeader().setVisible(False)
