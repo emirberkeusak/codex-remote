@@ -2258,6 +2258,50 @@ class MainWindow(QtWidgets.QMainWindow):
 
         v1.addLayout(ctrl1)
 
+        cd1 = QtWidgets.QHBoxLayout()
+        self.max_cd_input1a = QtWidgets.QLineEdit()
+        self.max_cd_input1a.setFixedWidth(80)
+        self.max_cd_input1a.setInputMask("00:00:00")
+        cd1.addWidget(QtWidgets.QLabel("Max Countdown:"))
+        cd1.addWidget(self.max_cd_input1a)
+
+        self.btn_generate_cd1a = QtWidgets.QPushButton("Generate")
+        cd1.addWidget(self.btn_generate_cd1a)
+
+        cd1.addSpacing(20)
+
+        self.max_cd_input1b = QtWidgets.QLineEdit()
+        self.max_cd_input1b.setFixedWidth(80)
+        self.max_cd_input1b.setInputMask("00:00:00")
+        cd1.addWidget(QtWidgets.QLabel("Max Countdown:"))
+        cd1.addWidget(self.max_cd_input1b)
+
+        self.btn_generate_cd1b = QtWidgets.QPushButton("Generate")
+        cd1.addWidget(self.btn_generate_cd1b)
+        cd1.addStretch()
+
+        v1.addLayout(cd1)
+
+        depth1 = QtWidgets.QHBoxLayout()
+        self.max_ask_depth_input1 = QtWidgets.QLineEdit()
+        self.max_ask_depth_input1.setFixedWidth(80)
+        depth1.addWidget(QtWidgets.QLabel("Max Ask Derinlik (USDT):"))
+        depth1.addWidget(self.max_ask_depth_input1)
+        self.btn_generate_ask_depth1 = QtWidgets.QPushButton("Generate")
+        depth1.addWidget(self.btn_generate_ask_depth1)
+
+        depth1.addSpacing(20)
+
+        self.max_bid_depth_input1 = QtWidgets.QLineEdit()
+        self.max_bid_depth_input1.setFixedWidth(80)
+        depth1.addWidget(QtWidgets.QLabel("Max Bid Derinlik (USDT):"))
+        depth1.addWidget(self.max_bid_depth_input1)
+        self.btn_generate_bid_depth1 = QtWidgets.QPushButton("Generate")
+        depth1.addWidget(self.btn_generate_bid_depth1)
+        depth1.addStretch()
+
+        v1.addLayout(depth1)
+
         self.fr_diff_table1 = QtWidgets.QTableView()
         self.fr_diff_table1.setShowGrid(True)
         self.fr_diff_table1.verticalHeader().setVisible(False)
@@ -2303,7 +2347,51 @@ class MainWindow(QtWidgets.QMainWindow):
         ctrl2.addStretch()
 
         v2.addLayout(ctrl2)
-        
+
+        cd2 = QtWidgets.QHBoxLayout()
+        self.max_cd_input2a = QtWidgets.QLineEdit()
+        self.max_cd_input2a.setFixedWidth(80)
+        self.max_cd_input2a.setInputMask("00:00:00")
+        cd2.addWidget(QtWidgets.QLabel("Max Countdown:"))
+        cd2.addWidget(self.max_cd_input2a)
+
+        self.btn_generate_cd2a = QtWidgets.QPushButton("Generate")
+        cd2.addWidget(self.btn_generate_cd2a)
+
+        cd2.addSpacing(20)
+
+        self.max_cd_input2b = QtWidgets.QLineEdit()
+        self.max_cd_input2b.setFixedWidth(80)
+        self.max_cd_input2b.setInputMask("00:00:00")
+        cd2.addWidget(QtWidgets.QLabel("Max Countdown:"))
+        cd2.addWidget(self.max_cd_input2b)
+
+        self.btn_generate_cd2b = QtWidgets.QPushButton("Generate")
+        cd2.addWidget(self.btn_generate_cd2b)
+        cd2.addStretch()
+
+        v2.addLayout(cd2)
+
+        depth2 = QtWidgets.QHBoxLayout()
+        self.max_ask_depth_input2 = QtWidgets.QLineEdit()
+        self.max_ask_depth_input2.setFixedWidth(80)
+        depth2.addWidget(QtWidgets.QLabel("Max Ask Derinlik (USDT):"))
+        depth2.addWidget(self.max_ask_depth_input2)
+        self.btn_generate_ask_depth2 = QtWidgets.QPushButton("Generate")
+        depth2.addWidget(self.btn_generate_ask_depth2)
+
+        depth2.addSpacing(20)
+
+        self.max_bid_depth_input2 = QtWidgets.QLineEdit()
+        self.max_bid_depth_input2.setFixedWidth(80)
+        depth2.addWidget(QtWidgets.QLabel("Max Bid Derinlik (USDT):"))
+        depth2.addWidget(self.max_bid_depth_input2)
+        self.btn_generate_bid_depth2 = QtWidgets.QPushButton("Generate")
+        depth2.addWidget(self.btn_generate_bid_depth2)
+        depth2.addStretch()
+
+        v2.addLayout(depth2)
+
         self.fr_diff_table2 = QtWidgets.QTableView()
         self.fr_diff_table2.setShowGrid(True)
         self.fr_diff_table2.verticalHeader().setVisible(False)
