@@ -1743,6 +1743,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart_windows: list[ChartWindow] = []
          # Açılan orderbook pencerelerini tut
         self.orderbook_windows: list[OrderbookWindow] = []
+        # Orderbook depth data (top 3 levels per exchange)
+        self.orderbook_data: dict[str, dict[str, tuple[list[tuple[float, float]], list[tuple[float, float]]]]] = {}
+        self._orderbook_task_scheduled = False
         # OKX normalized symbol -> instId mapping
         self._okx_symbol_map: dict[str, str] = {}
         # Bybit normalized symbol -> raw symbol mapping
@@ -2032,6 +2035,74 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ws_tasks.append(loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab)))
         self._ws_tasks.append(loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab)))
         self._askbid_task_scheduled = True
+
+    async def start_orderbook_feeds(self):
+        """Launch top-of-book depth feeds for computing 3-level sums."""
+        if self._orderbook_task_scheduled:
+            return
+        loop = asyncio.get_event_loop()
+        bin_syms = await fetch_binance_futures()
+        self._ws_tasks.append(
+            loop.create_task(
+                publish_binance_orderbook(
+                    bin_syms,
+                    lambda s, b, a: self._enqueue_orderbook("Binance", s, b, a),
+                    lambda *_: None,
+                )
+            )
+        )
+
+        async with aiohttp.ClientSession() as sess:
+            r = await sess.get(OKX_REST_INSTRUMENTS)
+            j = await r.json()
+        okx_syms = [
+            e["instId"]
+            for e in j.get("data", [])
+            if isinstance(e.get("instId"), str) and e["instId"].endswith("-USDT-SWAP")
+        ]
+        self._ws_tasks.append(
+            loop.create_task(
+                publish_okx_orderbook(
+                    okx_syms,
+                    lambda s, b, a: self._enqueue_orderbook("OKX", s, b, a),
+                    lambda *_: None,
+                )
+            )
+        )
+
+        bybit_syms = await fetch_bybit_swaps()
+        self._ws_tasks.append(
+            loop.create_task(
+                publish_bybit_orderbook(
+                    bybit_syms,
+                    lambda s, b, a: self._enqueue_orderbook("Bybit", s, b, a),
+                    lambda *_: None,
+                )
+            )
+        )
+
+        bitget_syms = await fetch_bitget_swaps()
+        self._ws_tasks.append(
+            loop.create_task(
+                publish_bitget_orderbook(
+                    bitget_syms,
+                    lambda s, b, a: self._enqueue_orderbook("Bitget", s, b, a),
+                    lambda *_: None,
+                )
+            )
+        )
+
+        gateio_syms = await fetch_gateio_swaps()
+        self._ws_tasks.append(
+            loop.create_task(
+                publish_gateio_orderbook(
+                    gateio_syms,
+                    lambda s, b, a: self._enqueue_orderbook("Gateio", s, b, a),
+                    lambda *_: None,
+                )
+            )
+        )
+        self._orderbook_task_scheduled = True
 
     # Funding sekmesini aç
     def open_funding_tab(self):
@@ -3360,6 +3431,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._askbid_timer.isActive():
             self._askbid_timer.start(33)
 
+    def _enqueue_orderbook(self, exchange: str, symbol: str,
+                           bids: list[tuple[float, float]],
+                           asks: list[tuple[float, float]]):
+        """Store latest orderbook depths for a symbol."""
+        norm = normalize_symbol(symbol)
+        if not norm:
+            return
+        if norm not in self.orderbook_data:
+            self.orderbook_data[norm] = {}
+        self.orderbook_data[norm][exchange] = (bids, asks)
+
     # ─── ~30 Hz’de dict’i boşaltıp tabloyu güncelleyen metod ───
     def _flush_askbid_data(self):
         if not self._askbid_data:
@@ -3550,6 +3632,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 else:
                     bid = ask = bid_qty = ask_qty = None
 
+                ob_entry = self.orderbook_data.get(sym, {}).get(exch)
+                if ob_entry:
+                    ob_bids, ob_asks = ob_entry
+                    ask3_val = sum(p * q for p, q in ob_asks[:3])
+                    bid3_val = sum(p * q for p, q in ob_bids[:3])
+                else:
+                    ask3_val = bid3_val = None
+
                 ask_val = None
                 if isinstance(ask, float) and isinstance(ask_qty, float):
                     ask_val = ask * ask_qty
@@ -3567,8 +3657,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     cd_str,
                     f"{ask_val:.4f}" if isinstance(ask_val, float) else "",
                     "",
+                    f"{ask3_val:.4f}" if isinstance(ask3_val, float) else "",
                     f"{bid_val:.4f}" if isinstance(bid_val, float) else "",
                     "",
+                    f"{bid3_val:.4f}" if isinstance(bid3_val, float) else "",
                     "",
                 ])
 
@@ -4401,6 +4493,7 @@ def main():
 
         # Start ask/bid feeds immediately but keep the tab closed
         window.start_askbid_feeds()
+        loop.create_task(window.start_orderbook_feeds())
 
     QtCore.QTimer.singleShot(5000, show_main)
 
