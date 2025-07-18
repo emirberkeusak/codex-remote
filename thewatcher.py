@@ -83,6 +83,26 @@ FEE_RATE_SELL = 0.0005  # Commission rate when selling
 DEBUG_BITGET_ORDERBOOK = False
 
 
+# --- Helper parsers -------------------------------------------------------
+def _parse_float(text: str) -> float | None:
+    """Return float value or None if empty/invalid."""
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_duration(text: str) -> int | None:
+    """Convert HH:MM:SS string to seconds. Return None if invalid."""
+    if not text:
+        return None
+    m = re.fullmatch(r"(\d{1,2}):(\d{1,2}):(\d{1,2})", text.strip())
+    if not m:
+        return None
+    h, m_, s = map(int, m.groups())
+    return h * 3600 + m_ * 60 + s
+
+
 # Supabase configuration
 SUPABASE_URL = "https://obtqpnfcfmybasnzclqf.supabase.co"
 SUPABASE_KEY = (
@@ -2343,10 +2363,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fr_symbols_dropdown2.selectionChanged.connect(
             self.fr_diff_proxy2.set_symbol_filter
         )
+        self.fr_symbols_dropdown2.selectionChanged.connect(self._update_fr_diff_models)
         layout.addWidget(box2)
 
         self.tabs.addTab(page, "Funding Rate Diff")
         self.tabs.setCurrentWidget(page)
+
+        # Connect filters
+        self.btn_generate_fr_diff1a.clicked.connect(self._update_fr_diff_models)
+        self.btn_generate_cd1a.clicked.connect(self._update_fr_diff_models)
+        self.btn_generate_ask_depth1.clicked.connect(self._update_fr_diff_models)
+        self.btn_generate_fr_symbols2.clicked.connect(self._update_fr_diff_models)
+        self.btn_generate_fr_diff2a.clicked.connect(self._update_fr_diff_models)
+        self.btn_generate_cd2a.clicked.connect(self._update_fr_diff_models)
+        self.btn_generate_ask_depth2.clicked.connect(self._update_fr_diff_models)
+
+        # Initial population
+        self._update_fr_diff_models()
 
     def open_orderbook_selection_tab(self):
         for i in range(self.tabs.count()):
@@ -3324,6 +3357,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     win.add_point(exchange, symbol, bid, ask)
         self._askbid_data.clear()
         self._askbid_timer.stop()
+        if hasattr(self, "fr_diff_model1"):
+            self._update_fr_diff_models()
 
     @QtCore.Slot()
     @QtCore.Slot(QtCore.QModelIndex)
@@ -3444,6 +3479,100 @@ class MainWindow(QtWidgets.QMainWindow):
                     else:
                         if row >= 0:
                             self.arb_model.end_event(row)
+
+    # ------------------------------------------------------------------
+    # Funding Rate Diff helpers
+    # ------------------------------------------------------------------
+    def _compute_fr_diff_rows(
+        self,
+        *,
+        symbols: set[str] | None = None,
+        min_fr: float | None = None,
+        max_fr: float | None = None,
+        max_cd: int | None = None,
+        max_ask: float | None = None,
+    ) -> list[list[str]]:
+        """Collect rows matching the provided thresholds from live data."""
+
+        rows: list[list[str]] = []
+        now_ts = time.time()
+
+        for sym in self.model._symbols:
+            if symbols and sym not in symbols:
+                continue
+            fdata = self.model._data.get(sym, {})
+            adata = self.askbid_model._data.get(sym, {})
+            for exch in EXCHANGES:
+                rate_str = fdata.get(exch)
+                if not rate_str:
+                    continue
+                try:
+                    rate = float(rate_str)
+                except ValueError:
+                    continue
+                if min_fr is not None and rate < min_fr:
+                    continue
+                if max_fr is not None and rate > max_fr:
+                    continue
+
+                ts = self.model._next_funding_ts.get((sym, exch))
+                cd_sec = max(0, int(ts - now_ts)) if ts is not None else None
+                if max_cd is not None and (cd_sec is None or cd_sec > max_cd):
+                    continue
+
+                if cd_sec is None:
+                    cd_str = ""
+                else:
+                    h, rem = divmod(cd_sec, 3600)
+                    m, s = divmod(rem, 60)
+                    cd_str = f"{h:02d}:{m:02d}:{s:02d}"
+
+                bid, ask = adata.get(exch, (None, None))
+                if max_ask is not None and isinstance(ask, float) and ask > max_ask:
+                    continue
+
+                rows.append([
+                    sym,
+                    exch,
+                    f"{rate:.4f}",
+                    cd_str,
+                    f"{ask:.8f}" if isinstance(ask, float) else "",
+                    "",
+                    f"{bid:.8f}" if isinstance(bid, float) else "",
+                    "",
+                    "",
+                ])
+
+        return rows
+
+    def _update_fr_diff_models(self):
+        """Recompute both FundingRateDiffModel tables from current data."""
+
+        if not hasattr(self, "fr_diff_model1"):
+            return
+
+        rows1 = self._compute_fr_diff_rows(
+            min_fr=_parse_float(self.min_fr_input1a.text()),
+            max_fr=_parse_float(self.max_fr_input1a.text()),
+            max_cd=_parse_duration(self.max_cd_input1a.text()),
+            max_ask=_parse_float(self.max_ask_depth_input1.text()),
+        )
+        self.fr_diff_model1.set_rows(rows1)
+
+        symbols2: set[str] | None = None
+        if hasattr(self, "fr_symbols_dropdown2"):
+            sel = self.fr_symbols_dropdown2.get_selected_items()
+            if sel and len(sel) < len(self.fr_symbols_dropdown2._items):
+                symbols2 = set(sel)
+
+        rows2 = self._compute_fr_diff_rows(
+            symbols=symbols2,
+            min_fr=_parse_float(self.min_fr_input2a.text()),
+            max_fr=_parse_float(self.max_fr_input2a.text()),
+            max_cd=_parse_duration(self.max_cd_input2a.text()),
+            max_ask=_parse_float(self.max_ask_depth_input2.text()),
+        )
+        self.fr_diff_model2.set_rows(rows2)
 
     async def _upload_closed_logs(self) -> bool:
         df = self._proxy_to_dataframe(self.closed_proxy)
@@ -4186,6 +4315,10 @@ def main():
                 row = window.arb_model.row_of(ev)
                 idx = window.arb_model.index(row, col)
                 window.arb_model.dataChanged.emit(idx, idx, [QtCore.Qt.DisplayRole])
+
+            # Refresh funding rate diff tables
+            if hasattr(window, "fr_diff_model1"):
+                window._update_fr_diff_models()
 
         # WebSocket’leri sarılmış callback ile başlat
         window._ws_tasks.append(loop.create_task(publish_binance (fr_cb, window._update_status_fr)))
