@@ -2242,21 +2242,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row1.addSpacing(20)
 
-        self.max_fr_input1b = QtWidgets.QLineEdit()
-        self.max_fr_input1b.setFixedWidth(80)
-        row1.addWidget(QtWidgets.QLabel("Max Funding Rate:"))
-        row1.addWidget(self.max_fr_input1b)
-
-        self.min_fr_input1b = QtWidgets.QLineEdit()
-        self.min_fr_input1b.setFixedWidth(80)
-        row1.addWidget(QtWidgets.QLabel("Min Funding Rate:"))
-        row1.addWidget(self.min_fr_input1b)
-
-        self.btn_generate_fr_diff1b = QtWidgets.QPushButton("Generate")
-        row1.addWidget(self.btn_generate_fr_diff1b)
-
-        row1.addSpacing(20)
-
         self.max_cd_input1a = QtWidgets.QLineEdit()
         self.max_cd_input1a.setFixedWidth(80)
         self.max_cd_input1a.setInputMask("00:00:00")
@@ -2268,55 +2253,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row1.addSpacing(20)
 
-        self.max_cd_input1b = QtWidgets.QLineEdit()
-        self.max_cd_input1b.setFixedWidth(80)
-        self.max_cd_input1b.setInputMask("00:00:00")
-        row1.addWidget(QtWidgets.QLabel("Max Countdown:"))
-        row1.addWidget(self.max_cd_input1b)
-
-        self.btn_generate_cd1b = QtWidgets.QPushButton("Generate")
-        row1.addWidget(self.btn_generate_cd1b)
+        self.max_ask_depth_input1 = QtWidgets.QLineEdit()
+        self.max_ask_depth_input1.setFixedWidth(80)
+        row1.addWidget(QtWidgets.QLabel("Max Ask Derinlik (USDT):"))
+        row1.addWidget(self.max_ask_depth_input1)
+        self.btn_generate_ask_depth1 = QtWidgets.QPushButton("Generate")
+        row1.addWidget(self.btn_generate_ask_depth1)
         row1.addStretch()
 
         v1.addLayout(row1)
-
-        row2 = QtWidgets.QHBoxLayout()
-        self.max_ask_depth_input1 = QtWidgets.QLineEdit()
-        self.max_ask_depth_input1.setFixedWidth(80)
-        row2.addWidget(QtWidgets.QLabel("Max Ask Derinlik (USDT):"))
-        row2.addWidget(self.max_ask_depth_input1)
-        self.btn_generate_ask_depth1 = QtWidgets.QPushButton("Generate")
-        row2.addWidget(self.btn_generate_ask_depth1)
-
-        row2.addSpacing(20)
-
-        self.max_bid_depth_input1 = QtWidgets.QLineEdit()
-        self.max_bid_depth_input1.setFixedWidth(80)
-        row2.addWidget(QtWidgets.QLabel("Max Bid Derinlik (USDT):"))
-        row2.addWidget(self.max_bid_depth_input1)
-        self.btn_generate_bid_depth1 = QtWidgets.QPushButton("Generate")
-        row2.addWidget(self.btn_generate_bid_depth1)
-
-        row2.addSpacing(20)
-
-        self.fr_diff_input1 = QtWidgets.QLineEdit()
-        self.fr_diff_input1.setFixedWidth(80)
-        row2.addWidget(QtWidgets.QLabel("Funding Rate Diff:"))
-        row2.addWidget(self.fr_diff_input1)
-        self.btn_generate_fr_diff_val1 = QtWidgets.QPushButton("Generate")
-        row2.addWidget(self.btn_generate_fr_diff_val1)
-
-        row2.addSpacing(20)
-
-        self.index_price_diff_input1 = QtWidgets.QLineEdit()
-        self.index_price_diff_input1.setFixedWidth(80)
-        row2.addWidget(QtWidgets.QLabel("Index Price Diff:"))
-        row2.addWidget(self.index_price_diff_input1)
-        self.btn_generate_index_price_diff1 = QtWidgets.QPushButton("Generate")
-        row2.addWidget(self.btn_generate_index_price_diff1)
-        row2.addStretch()
-
-        v1.addLayout(row2)
 
         self.fr_diff_table1 = QtWidgets.QTableView()
         self.fr_diff_table1.setShowGrid(True)
@@ -2348,21 +2293,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row1b.addSpacing(20)
 
-        self.max_fr_input2b = QtWidgets.QLineEdit()
-        self.max_fr_input2b.setFixedWidth(80)
-        row1b.addWidget(QtWidgets.QLabel("Max Funding Rate:"))
-        row1b.addWidget(self.max_fr_input2b)
-
-        self.min_fr_input2b = QtWidgets.QLineEdit()
-        self.min_fr_input2b.setFixedWidth(80)
-        row1b.addWidget(QtWidgets.QLabel("Min Funding Rate:"))
-        row1b.addWidget(self.min_fr_input2b)
-
-        self.btn_generate_fr_diff2b = QtWidgets.QPushButton("Generate")
-        row1b.addWidget(self.btn_generate_fr_diff2b)
-
-        row1b.addSpacing(20)
-
         self.max_cd_input2a = QtWidgets.QLineEdit()
         self.max_cd_input2a.setFixedWidth(80)
         self.max_cd_input2a.setInputMask("00:00:00")
@@ -2374,55 +2304,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row1b.addSpacing(20)
 
-        self.max_cd_input2b = QtWidgets.QLineEdit()
-        self.max_cd_input2b.setFixedWidth(80)
-        self.max_cd_input2b.setInputMask("00:00:00")
-        row1b.addWidget(QtWidgets.QLabel("Max Countdown:"))
-        row1b.addWidget(self.max_cd_input2b)
-
-        self.btn_generate_cd2b = QtWidgets.QPushButton("Generate")
-        row1b.addWidget(self.btn_generate_cd2b)
+        self.max_ask_depth_input2 = QtWidgets.QLineEdit()
+        self.max_ask_depth_input2.setFixedWidth(80)
+        row1b.addWidget(QtWidgets.QLabel("Max Ask Derinlik (USDT):"))
+        row1b.addWidget(self.max_ask_depth_input2)
+        self.btn_generate_ask_depth2 = QtWidgets.QPushButton("Generate")
+        row1b.addWidget(self.btn_generate_ask_depth2)
         row1b.addStretch()
 
         v2.addLayout(row1b)
-
-        row2b = QtWidgets.QHBoxLayout()
-        self.max_ask_depth_input2 = QtWidgets.QLineEdit()
-        self.max_ask_depth_input2.setFixedWidth(80)
-        row2b.addWidget(QtWidgets.QLabel("Max Ask Derinlik (USDT):"))
-        row2b.addWidget(self.max_ask_depth_input2)
-        self.btn_generate_ask_depth2 = QtWidgets.QPushButton("Generate")
-        row2b.addWidget(self.btn_generate_ask_depth2)
-
-        row2b.addSpacing(20)
-
-        self.max_bid_depth_input2 = QtWidgets.QLineEdit()
-        self.max_bid_depth_input2.setFixedWidth(80)
-        row2b.addWidget(QtWidgets.QLabel("Max Bid Derinlik (USDT):"))
-        row2b.addWidget(self.max_bid_depth_input2)
-        self.btn_generate_bid_depth2 = QtWidgets.QPushButton("Generate")
-        row2b.addWidget(self.btn_generate_bid_depth2)
-
-        row2b.addSpacing(20)
-
-        self.fr_diff_input2 = QtWidgets.QLineEdit()
-        self.fr_diff_input2.setFixedWidth(80)
-        row2b.addWidget(QtWidgets.QLabel("Funding Rate Diff:"))
-        row2b.addWidget(self.fr_diff_input2)
-        self.btn_generate_fr_diff_val2 = QtWidgets.QPushButton("Generate")
-        row2b.addWidget(self.btn_generate_fr_diff_val2)
-
-        row2b.addSpacing(20)
-
-        self.index_price_diff_input2 = QtWidgets.QLineEdit()
-        self.index_price_diff_input2.setFixedWidth(80)
-        row2b.addWidget(QtWidgets.QLabel("Index Price Diff:"))
-        row2b.addWidget(self.index_price_diff_input2)
-        self.btn_generate_index_price_diff2 = QtWidgets.QPushButton("Generate")
-        row2b.addWidget(self.btn_generate_index_price_diff2)
-        row2b.addStretch()
-
-        v2.addLayout(row2b)
 
         self.fr_diff_table2 = QtWidgets.QTableView()
         self.fr_diff_table2.setShowGrid(True)
