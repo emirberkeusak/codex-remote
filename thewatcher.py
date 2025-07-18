@@ -3656,10 +3656,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     f"{rate:.4f}",
                     cd_str,
                     f"{ask_val:.4f}" if isinstance(ask_val, float) else "",
-                    "",
                     f"{ask3_val:.4f}" if isinstance(ask3_val, float) else "",
                     f"{bid_val:.4f}" if isinstance(bid_val, float) else "",
-                    "",
                     f"{bid3_val:.4f}" if isinstance(bid3_val, float) else "",
                     "",
                 ])
