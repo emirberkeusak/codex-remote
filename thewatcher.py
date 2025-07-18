@@ -2282,6 +2282,14 @@ class MainWindow(QtWidgets.QMainWindow):
         v2 = QtWidgets.QVBoxLayout(box2)
 
         row1b = QtWidgets.QHBoxLayout()
+        row1b.addWidget(QtWidgets.QLabel("Symbols:"))
+        self.fr_symbols_dropdown2 = MultiSelectDropdown()
+        row1b.addWidget(self.fr_symbols_dropdown2)
+        self.btn_generate_fr_symbols2 = QtWidgets.QPushButton("Generate")
+        row1b.addWidget(self.btn_generate_fr_symbols2)
+
+        row1b.addSpacing(20)
+
         self.max_fr_input2a = QtWidgets.QLineEdit()
         self.max_fr_input2a.setFixedWidth(80)
         row1b.addWidget(QtWidgets.QLabel("Max Funding Rate:"))
@@ -2291,9 +2299,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.min_fr_input2a.setFixedWidth(80)
         row1b.addWidget(QtWidgets.QLabel("Min Funding Rate:"))
         row1b.addWidget(self.min_fr_input2a)
-        row1b.addWidget(QtWidgets.QLabel("Symbols:"))
-        self.fr_symbols_dropdown2 = MultiSelectDropdown()
-        row1b.addWidget(self.fr_symbols_dropdown2)
 
         self.btn_generate_fr_diff2a = QtWidgets.QPushButton("Generate")
         row1b.addWidget(self.btn_generate_fr_diff2a)
