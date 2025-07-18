@@ -863,7 +863,8 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
     def __init__(self):
         super().__init__()
         self._symbols = []           # sıra ile eklenen semboller
-        self._data    = {}           # { sym: { exch: (bid, ask) } }
+        # { sym: { exch: (bid_price, ask_price, bid_qty, ask_qty) } }
+        self._data    = {}
         self._prev    = {}           # { (sym, exch, side): float } , side in {"bid","ask"}
         self.delegate = None
 
@@ -890,12 +891,24 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         if c == 0:
             return sym
         exch = AB_EXCHANGES[(c-1)//2]
-        bid, ask = self._data.get(sym, {}).get(exch, ("",""))
-        val = ask if c%2==1 else bid
+        entry = self._data.get(sym, {}).get(exch)
+        if entry:
+            bid, ask = entry[0], entry[1]
+        else:
+            bid = ask = ""
+        val = ask if c%2 == 1 else bid
         return f"{val:.8f}" if isinstance(val, float) else val
 
-    @QtCore.Slot(str, str, float, float)
-    def update_askbid(self, exchange: str, raw_symbol: str, bid: float, ask: float):
+    @QtCore.Slot(str, str, float, float, object, object)
+    def update_askbid(
+        self,
+        exchange: str,
+        raw_symbol: str,
+        bid: float,
+        ask: float,
+        bid_qty: float | None = None,
+        ask_qty: float | None = None,
+    ):
         # 1) Symbol normalize
         if exchange not in AB_EXCHANGES:
             return
@@ -922,7 +935,7 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         # 4) Yeni değerleri sakla
         self._prev[key_bid] = bid
         self._prev[key_ask] = ask
-        self._data[sym][exchange] = (bid, ask)
+        self._data[sym][exchange] = (bid, ask, bid_qty, ask_qty)
 
         # 5) Hücreyi güncelle
         row = self._symbols.index(sym)
@@ -1649,10 +1662,16 @@ class ArbitrageTask(QtCore.QObject, QtCore.QRunnable):
                     actions.append(("expire", ev, key))
 
         for symbol, exch_data in self.data.items():
-            for buy_exch, (_, ask_price) in exch_data.items():
+            for buy_exch, vals_buy in exch_data.items():
+                if len(vals_buy) < 2:
+                    continue
+                ask_price = vals_buy[1]
                 if ask_price <= 0:
                     continue
-                for sell_exch, (bid_price, _) in exch_data.items():
+                for sell_exch, vals_sell in exch_data.items():
+                    if len(vals_sell) < 1:
+                        continue
+                    bid_price = vals_sell[0]
                     if sell_exch == buy_exch or bid_price <= 0:
                         continue
                     raw_rate = bid_price / ask_price - 1
@@ -3336,8 +3355,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     # ─── WebSocket’ten gelen verileri önce dict’e koyan metod ───
-    def _enqueue_askbid(self, exchange, symbol, bid, ask):
-        self._askbid_data[(exchange, symbol)] = (bid, ask)
+    def _enqueue_askbid(self, exchange, symbol, bid, ask, bid_qty=None, ask_qty=None):
+        self._askbid_data[(exchange, symbol)] = (bid, ask, bid_qty, ask_qty)
         if not self._askbid_timer.isActive():
             self._askbid_timer.start(33)
 
@@ -3347,9 +3366,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._askbid_timer.stop()
             return
 
-        for (exchange, symbol), (bid, ask) in self._askbid_data.items():
+        for (exchange, symbol), (bid, ask, bid_qty, ask_qty) in self._askbid_data.items():
             if symbol and isinstance(symbol, str):
-                self.askbid_model.update_askbid(exchange, symbol, bid, ask)
+                self.askbid_model.update_askbid(exchange, symbol, bid, ask, bid_qty, ask_qty)
                 for win in list(self.chart_windows):
                     win.add_point(exchange, symbol, bid, ask)
         self._askbid_data.clear()
@@ -3523,8 +3542,22 @@ class MainWindow(QtWidgets.QMainWindow):
                     m, s = divmod(rem, 60)
                     cd_str = f"{h:02d}:{m:02d}:{s:02d}"
 
-                bid, ask = adata.get(exch, (None, None))
-                if max_ask is not None and isinstance(ask, float) and ask > max_ask:
+                entry = adata.get(exch)
+                if entry:
+                    bid, ask, bid_qty, ask_qty = (
+                        entry[0], entry[1], entry[2], entry[3]
+                    )
+                else:
+                    bid = ask = bid_qty = ask_qty = None
+
+                ask_val = None
+                if isinstance(ask, float) and isinstance(ask_qty, float):
+                    ask_val = ask * ask_qty
+                bid_val = None
+                if isinstance(bid, float) and isinstance(bid_qty, float):
+                    bid_val = bid * bid_qty
+
+                if max_ask is not None and (ask_val is None or ask_val > max_ask):
                     continue
 
                 rows.append([
@@ -3532,9 +3565,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     exch,
                     f"{rate:.4f}",
                     cd_str,
-                    f"{ask:.8f}" if isinstance(ask, float) else "",
+                    f"{ask_val:.4f}" if isinstance(ask_val, float) else "",
                     "",
-                    f"{bid:.8f}" if isinstance(bid, float) else "",
+                    f"{bid_val:.4f}" if isinstance(bid_val, float) else "",
                     "",
                     "",
                 ])
@@ -3919,7 +3952,14 @@ async def publish_binance_askbid(cb, status_cb):
                 async for raw in ws:
                     msg = json.loads(raw)
                     if msg.get("e") == "bookTicker":
-                        cb("Binance", msg["s"], float(msg["b"]), float(msg["a"]))
+                        cb(
+                            "Binance",
+                            msg["s"],
+                            float(msg["b"]),
+                            float(msg["a"]),
+                            float(msg.get("B", 0)),
+                            float(msg.get("A", 0)),
+                        )
         except Exception as e:
             status_cb("Binance", False)
             print(f"[Binance AskBid] Error: {e}, reconnecting in 5s")
@@ -3960,8 +4000,10 @@ async def publish_okx_askbid(cb, status_cb):
                             if not bids or not asks:
                                 continue
                             bid_price = float(bids[0][0])
+                            bid_qty = float(bids[0][1])
                             ask_price = float(asks[0][0])
-                            cb("OKX", instId, bid_price, ask_price)
+                            ask_qty = float(asks[0][1])
+                            cb("OKX", instId, bid_price, ask_price, bid_qty, ask_qty)
         except Exception as e:
             status_cb("OKX", False)
             print(f"[OKX AskBid] Error: {e}, reconnect in 5s")
@@ -3996,8 +4038,10 @@ async def publish_bybit_askbid(cb, status_cb):
                         if not bids or not asks:
                             continue
                         bid_price = float(bids[0][0])
+                        bid_qty = float(bids[0][1])
                         ask_price = float(asks[0][0])
-                        cb("Bybit", sym, bid_price, ask_price)
+                        ask_qty = float(asks[0][1])
+                        cb("Bybit", sym, bid_price, ask_price, bid_qty, ask_qty)
         except Exception as e:
             status_cb("Bybit", False)
             print(f"[Bybit AskBid] Error: {e}, reconnect in 5s")
@@ -4035,8 +4079,17 @@ async def publish_bitget_askbid(cb, status_cb):
                             inst = d.get("instId")
                             bid  = d.get("bidPr")
                             ask  = d.get("askPr")
+                            bid_sz = d.get("bidSz")
+                            ask_sz = d.get("askSz")
                             if inst and bid is not None and ask is not None:
-                                cb("Bitget", inst, float(bid), float(ask))
+                                cb(
+                                    "Bitget",
+                                    inst,
+                                    float(bid),
+                                    float(ask),
+                                    float(bid_sz) if bid_sz is not None else None,
+                                    float(ask_sz) if ask_sz is not None else None,
+                                )
 
         except Exception as e:
             status_cb("Bitget", False)
@@ -4072,7 +4125,14 @@ async def publish_gateio_askbid(cb, status_cb):
                     m = json.loads(raw)
                     if m.get("channel") == "futures.book_ticker" and m.get("event") == "update":
                         r = m["result"]
-                        cb("Gateio", r["s"], float(r["b"]), float(r["a"]))
+                        cb(
+                            "Gateio",
+                            r["s"],
+                            float(r["b"]),
+                            float(r["a"]),
+                            float(r.get("B", 0)),
+                            float(r.get("A", 0)),
+                        )
         except Exception as e:
             status_cb("Gateio", False)
             print(f"[Gateio AskBid] Error: {e}, reconnecting in 5s")
