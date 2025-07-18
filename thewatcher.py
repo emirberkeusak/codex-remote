@@ -52,18 +52,14 @@ FUNDING_COLUMNS = [
 # Funding Rate Diff tablosu kolon başlıkları
 FUNDING_RATE_DIFF_COLUMNS = [
     "Symbol",
-    "Alım Exch",
+    "Exch",
     "Funding Rate",
     "Countdown",
     "Ask Derinlik",
     "3 Kademe Derinlik",
-    "Satım Exch",
-    "Funding Rate",
-    "Countdown",
     "Bid Derinlik",
     "3 Kademe Derinlik",
-    "Funding Rate Diff",
-    "Index Price Diff",
+    "Index Price",
 ]
 
 BINANCE_URL            = "wss://fstream.binance.com/stream?streams=!markPrice@arr"
@@ -1013,9 +1009,12 @@ class ClosedArbitrageProxyModel(QtCore.QSortFilterProxyModel):
 class FundingRateDiffModel(QtCore.QAbstractTableModel):
     """Simple model to display funding rate differences."""
 
+    symbolsUpdated = QtCore.Signal(list)
+
     def __init__(self):
         super().__init__()
         self._rows: list[list[str]] = []
+        self._symbols: list[str] = []
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._rows)
@@ -1039,7 +1038,9 @@ class FundingRateDiffModel(QtCore.QAbstractTableModel):
     def set_rows(self, rows: list[list[str]]):
         self.beginResetModel()
         self._rows = rows
+        self._symbols = [r[0] for r in rows]
         self.endResetModel()
+        self.symbolsUpdated.emit(self._symbols.copy())
     
 # --- Simple chart window for bid/ask history ---
 
@@ -2267,7 +2268,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fr_diff_table1.setShowGrid(True)
         self.fr_diff_table1.verticalHeader().setVisible(False)
         self.fr_diff_model1 = FundingRateDiffModel()
-        self.fr_diff_table1.setModel(self.fr_diff_model1)
+        self.fr_diff_proxy1 = SymbolFilterProxyModel()
+        self.fr_diff_proxy1.setSourceModel(self.fr_diff_model1)
+        self.fr_diff_proxy1.setDynamicSortFilter(True)
+        self.fr_diff_table1.setModel(self.fr_diff_proxy1)
         header1 = self.fr_diff_table1.horizontalHeader()
         header1.setSectionResizeMode(QHeaderView.Stretch)
         v1.addWidget(self.fr_diff_table1)
@@ -2287,6 +2291,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.min_fr_input2a.setFixedWidth(80)
         row1b.addWidget(QtWidgets.QLabel("Min Funding Rate:"))
         row1b.addWidget(self.min_fr_input2a)
+        row1b.addWidget(QtWidgets.QLabel("Symbols:"))
+        self.fr_symbols_dropdown2 = MultiSelectDropdown()
+        row1b.addWidget(self.fr_symbols_dropdown2)
 
         self.btn_generate_fr_diff2a = QtWidgets.QPushButton("Generate")
         row1b.addWidget(self.btn_generate_fr_diff2a)
@@ -2318,10 +2325,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fr_diff_table2.setShowGrid(True)
         self.fr_diff_table2.verticalHeader().setVisible(False)
         self.fr_diff_model2 = FundingRateDiffModel()
-        self.fr_diff_table2.setModel(self.fr_diff_model2)
+        self.fr_diff_proxy2 = SymbolFilterProxyModel()
+        self.fr_diff_proxy2.setSourceModel(self.fr_diff_model2)
+        self.fr_diff_proxy2.setDynamicSortFilter(True)
+        self.fr_diff_table2.setModel(self.fr_diff_proxy2)
         header2 = self.fr_diff_table2.horizontalHeader()
         header2.setSectionResizeMode(QHeaderView.Stretch)
         v2.addWidget(self.fr_diff_table2)
+        self.fr_diff_model2.symbolsUpdated.connect(
+            lambda syms: self.fr_symbols_dropdown2.set_items(syms)
+        )
+        self.fr_symbols_dropdown2.selectionChanged.connect(
+            self.fr_diff_proxy2.set_symbol_filter
+        )
         layout.addWidget(box2)
 
         self.tabs.addTab(page, "Funding Rate Diff")
