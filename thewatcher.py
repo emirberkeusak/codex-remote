@@ -3961,6 +3961,19 @@ class MainWindow(QtWidgets.QMainWindow):
 # --- WebSocket feeders ---
 async def publish_binance(cb, status_cb):
     url = BINANCE_URL
+    # Fetch list of USDT perpetual futures to filter websocket updates
+    try:
+        async with aiohttp.ClientSession() as sess:
+            r = await sess.get(BINANCE_REST_EXCHANGE_INFO)
+            j = await r.json()
+        valid_syms = {
+            e["symbol"]
+            for e in j.get("symbols", [])
+            if e.get("contractType") == "PERPETUAL" and e.get("quoteAsset") == "USDT"
+        }
+    except Exception as exc:
+        valid_syms = set()
+        print(f"[Binance] Failed to fetch contract info: {exc}", file=sys.stderr)
     while True:
         try:
             # bağlantı kuruluyor → indicator’u yeşile çek
@@ -3971,10 +3984,13 @@ async def publish_binance(cb, status_cb):
                     m = json.loads(raw)
                     for u in m.get("data", []):
                         if "s" in u and "r" in u:
+                            sym = u["s"]
+                            if valid_syms and sym not in valid_syms:
+                                continue  # ignore non-perpetual or non-USDT pairs
                             ts = u.get("T")
                             if ts is not None:
                                 ts = ts / 1000
-                            cb("Binance", u["s"], float(u["r"]) * 100, ts)
+                            cb("Binance", sym, float(u["r"]) * 100, ts)
         except Exception as e:
             # bağlantı koptu → indicator’u mavi yap
             status_cb("Binance", False)
