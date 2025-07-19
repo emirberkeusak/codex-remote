@@ -837,13 +837,22 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         self.dataChanged.emit(src_idx, src_idx, [QtCore.Qt.DisplayRole])
 
         # store next funding timestamp for supported exchanges and update countdown
-        if next_ts is not None and f"{exchange} Countdown" in FUNDING_COLUMNS:
-            if self._next_funding_ts.get((sym, exchange)) != next_ts:
-                modified = True
-            self._next_funding_ts[(sym, exchange)] = next_ts
-            c_col = FUNDING_COLUMNS.index(f"{exchange} Countdown")
-            c_idx = self.index(row, c_col)
-            self.dataChanged.emit(c_idx, c_idx, [QtCore.Qt.DisplayRole])
+        if f"{exchange} Countdown" in FUNDING_COLUMNS:
+            if next_ts is not None:
+                if self._next_funding_ts.get((sym, exchange)) != next_ts:
+                    modified = True
+                self._next_funding_ts[(sym, exchange)] = next_ts
+                c_col = FUNDING_COLUMNS.index(f"{exchange} Countdown")
+                c_idx = self.index(row, c_col)
+                self.dataChanged.emit(c_idx, c_idx, [QtCore.Qt.DisplayRole])
+            else:
+                # next_ts None olduğunda daha önce varsa temizle (opt.)
+                if (sym, exchange) in self._next_funding_ts:
+                    del self._next_funding_ts[(sym, exchange)]
+                    c_col = FUNDING_COLUMNS.index(f"{exchange} Countdown")
+                    c_idx = self.index(row, c_col)
+                    self.dataChanged.emit(c_idx, c_idx, [QtCore.Qt.DisplayRole])
+
 
         # flash via proxy index so empty cells don't flash
         if self.delegate and changed:
