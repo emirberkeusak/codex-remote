@@ -4192,10 +4192,13 @@ async def publish_okx(cb, status_cb, index_cb=None):
         "op": "subscribe",
         "args": [{"channel": "funding-rate", "instId": inst} for inst in insts]
     }
-    mark_sub = {
-        "op": "subscribe",
-        "args": [{"channel": "mark-price", "instId": inst} for inst in insts]
-    } if index_cb else None
+    index_sub = None
+    if index_cb:
+        index_args = []
+        for inst in insts:
+            base_pair = re.sub(r"-SWAP$", "", inst)
+            index_args.append({"channel": "index-tickers", "instId": base_pair})
+        index_sub = {"op": "subscribe", "args": index_args}
 
     while True:
         try:
@@ -4204,8 +4207,8 @@ async def publish_okx(cb, status_cb, index_cb=None):
                 status_cb("OKX", True)
                 print("[OKX] Connected")
                 await ws.send(json.dumps(sub))
-                if mark_sub:
-                    await ws.send(json.dumps(mark_sub))
+                if index_sub:
+                    await ws.send(json.dumps(index_sub))
                 async for raw in ws:
                     m = json.loads(raw)
                     arg = m.get("arg", {})
@@ -4225,8 +4228,8 @@ async def publish_okx(cb, status_cb, index_cb=None):
                                 float(e["fundingRate"]) * 100,
                                 next_ts,
                             )
-                        elif channel == "mark-price" and index_cb:
-                            price = e.get("idxPx")
+                        elif channel == "index-tickers" and index_cb:
+                            price = e.get("idxPx") or e.get("indexPx")
                             sym = e.get("instId")
                             if price is not None and sym:
                                 try:
