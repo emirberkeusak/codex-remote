@@ -2456,6 +2456,14 @@ class MainWindow(QtWidgets.QMainWindow):
         row1.addWidget(self.max_ask_depth_input1)
         self.btn_generate_ask_depth1 = QtWidgets.QPushButton("Generate")
         row1.addWidget(self.btn_generate_ask_depth1)
+        row1.addSpacing(20)
+
+        self.min_ask_depth_input1 = QtWidgets.QLineEdit()
+        self.min_ask_depth_input1.setFixedWidth(80)
+        row1.addWidget(QtWidgets.QLabel("Min Ask Derinlik (USDT):"))
+        row1.addWidget(self.min_ask_depth_input1)
+        self.btn_generate_min_ask_depth1 = QtWidgets.QPushButton("Generate")
+        row1.addWidget(self.btn_generate_min_ask_depth1)
         row1.addStretch()
 
         v1.addLayout(row1)
@@ -2518,6 +2526,14 @@ class MainWindow(QtWidgets.QMainWindow):
         row1b.addWidget(self.max_ask_depth_input2)
         self.btn_generate_ask_depth2 = QtWidgets.QPushButton("Generate")
         row1b.addWidget(self.btn_generate_ask_depth2)
+        row1b.addSpacing(20)
+
+        self.min_ask_depth_input2 = QtWidgets.QLineEdit()
+        self.min_ask_depth_input2.setFixedWidth(80)
+        row1b.addWidget(QtWidgets.QLabel("Min Ask Derinlik (USDT):"))
+        row1b.addWidget(self.min_ask_depth_input2)
+        self.btn_generate_min_ask_depth2 = QtWidgets.QPushButton("Generate")
+        row1b.addWidget(self.btn_generate_min_ask_depth2)
         row1b.addStretch()
 
         v2.addLayout(row1b)
@@ -2548,10 +2564,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_generate_fr_diff1a.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_cd1a.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_ask_depth1.clicked.connect(self._update_fr_diff_models)
+        self.btn_generate_min_ask_depth1.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_fr_symbols2.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_fr_diff2a.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_cd2a.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_ask_depth2.clicked.connect(self._update_fr_diff_models)
+        self.btn_generate_min_ask_depth2.clicked.connect(self._update_fr_diff_models)
 
 
     def open_orderbook_selection_tab(self):
@@ -3687,8 +3705,12 @@ class MainWindow(QtWidgets.QMainWindow):
         max_fr: float | None = None,
         max_cd: int | None = None,
         max_ask: float | None = None,
+        min_ask: float | None = None,
     ) -> list[list[str]]:
-        """Collect rows matching the provided thresholds from live data."""
+        """Collect rows matching the provided thresholds from live data.
+
+        Parameters allow filtering by funding rate, countdown, and ask depth.
+        """
 
         rows: list[list[str]] = []
         now_ts = time.time()
@@ -3747,6 +3769,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     bid_val = bid * bid_qty
 
                 if max_ask is not None and (ask_val is None or ask_val > max_ask):
+                    continue
+                if min_ask is not None and (ask_val is None or ask_val < min_ask):
                     continue
 
                 idx_price = self.index_prices.get(sym, {}).get(exch)
@@ -3818,8 +3842,15 @@ class MainWindow(QtWidgets.QMainWindow):
         max1 = _parse_float(self.max_fr_input1a.text())
         cd1  = _parse_duration(self.max_cd_input1a.text())
         ask1 = _parse_float(self.max_ask_depth_input1.text())
+        min_ask1 = _parse_float(self.min_ask_depth_input1.text())
 
-        if min1 is None and max1 is None and cd1 is None and ask1 is None:
+        if (
+            min1 is None
+            and max1 is None
+            and cd1 is None
+            and ask1 is None
+            and min_ask1 is None
+        ):
             self._fr_diff_params1 = None
         else:
             self._fr_diff_params1 = {
@@ -3827,6 +3858,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "max_fr": max1,
                 "max_cd": cd1,
                 "max_ask": ask1,
+                "min_ask": min_ask1,
             }
 
         symbols2: set[str] | None = None
@@ -3839,9 +3871,14 @@ class MainWindow(QtWidgets.QMainWindow):
         max2 = _parse_float(self.max_fr_input2a.text())
         cd2  = _parse_duration(self.max_cd_input2a.text())
         ask2 = _parse_float(self.max_ask_depth_input2.text())
+        min_ask2 = _parse_float(self.min_ask_depth_input2.text())
 
         if (
-            min2 is None and max2 is None and cd2 is None and ask2 is None
+            min2 is None
+            and max2 is None
+            and cd2 is None
+            and ask2 is None
+            and min_ask2 is None
             and not symbols2
         ):
             self._fr_diff_params2 = None
@@ -3852,6 +3889,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "max_fr": max2,
                 "max_cd": cd2,
                 "max_ask": ask2,
+                "min_ask": min_ask2,
             }
         
         self._reset_fr_diff_counters()
