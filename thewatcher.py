@@ -3760,7 +3760,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     f"{ask3_val:.4f}" if isinstance(ask3_val, float) else "",
                     f"{bid_val:.4f}" if isinstance(bid_val, float) else "",
                     f"{bid3_val:.4f}" if isinstance(bid3_val, float) else "",
-                    f"{idx_price:.4f}" if isinstance(idx_price, float) else "",
+                    f"{idx_price:.7f}" if isinstance(idx_price, float) else "",
                 ])
 
         return rows
