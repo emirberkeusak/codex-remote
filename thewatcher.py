@@ -2418,6 +2418,13 @@ class MainWindow(QtWidgets.QMainWindow):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(5, 5, 5, 5)
+
+        # Export button row
+        top = QtWidgets.QHBoxLayout()
+        self.btn_export_fr_diff = QtWidgets.QPushButton("Excel'e Aktar")
+        top.addStretch()
+        top.addWidget(self.btn_export_fr_diff)
+        layout.addLayout(top)
         
         # First table and controls
         box1 = QtWidgets.QGroupBox("Funding Rate Diff")
@@ -2596,6 +2603,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.tabs.addTab(page, "Funding Rate Diff")
         self.tabs.setCurrentWidget(page)
+
+        self.btn_export_fr_diff.clicked.connect(self.on_export_fr_diff_excel)
 
         # Connect filters
         self.btn_generate_fr_diff1a.clicked.connect(self._update_fr_diff_models)
@@ -3365,6 +3374,50 @@ class MainWindow(QtWidgets.QMainWindow):
         df = pd.DataFrame(rows, columns=headers)
         func = lambda: df.to_excel(path, index=False)
         self._start_export(func, path)
+
+    def on_export_fr_diff_excel(self):
+        """Funding rate diff tablolarını Excel'e aktar."""
+        ts = datetime.now().strftime('%d%m%Y%H%M%S')
+        default_name = f"FundingRateDiff {ts}.xlsx"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Tabloyu Kaydet",
+            default_name,
+            "Excel Dosyaları (*.xlsx)",
+        )
+        if not path:
+            return
+        self._export_fr_diff(path)
+
+    def _export_fr_diff(self, path: str):
+        headers1 = [
+            self.fr_diff_model1.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
+            for c in range(self.fr_diff_model1.columnCount())
+        ]
+        headers2 = [
+            self.fr_diff_model2.headerData(c, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
+            for c in range(self.fr_diff_model2.columnCount())
+        ]
+
+        def collect(proxy, headers):
+            rows = []
+            for r in range(proxy.rowCount()):
+                rec = {}
+                for c in range(proxy.columnCount()):
+                    idx = proxy.index(r, c)
+                    rec[headers[c]] = proxy.data(idx, QtCore.Qt.DisplayRole)
+                rows.append(rec)
+            return pd.DataFrame(rows, columns=headers)
+
+        df1 = collect(self.fr_diff_proxy1, headers1)
+        df2 = collect(self.fr_diff_proxy2, headers2)
+
+        def save():
+            with pd.ExcelWriter(path) as writer:
+                df1.to_excel(writer, sheet_name="Üst Tablo", index=False)
+                df2.to_excel(writer, sheet_name="Alt Tablo", index=False)
+
+        self._start_export(save, path)
 
     @QtCore.Slot()
     def on_download_db_data(self):
