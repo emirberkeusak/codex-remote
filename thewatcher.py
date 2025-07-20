@@ -1810,6 +1810,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.orderbook_data: dict[str, dict[str, tuple[list[tuple[float, float]], list[tuple[float, float]]]]] = {}
         self._orderbook_counter = 0
         self._orderbook_task_scheduled = False
+        # Index price data per symbol/exchange
+        self.index_prices: dict[str, dict[str, float]] = {}
+        self._index_counter = 0
         # OKX normalized symbol -> instId mapping
         self._okx_symbol_map: dict[str, str] = {}
         # Bybit normalized symbol -> raw symbol mapping
@@ -1944,6 +1947,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._fr_diff_last_funding = -1
         self._fr_diff_last_askbid = -1
         self._fr_diff_last_orderbook = -1
+        self._fr_diff_last_index = -1
 
         # Başlangıç teması
         self.toggle_theme(self.btn_toggle_theme.isChecked())
@@ -3525,6 +3529,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.orderbook_data[norm][exchange] = (bids, asks)
         self._orderbook_counter += 1
 
+    @QtCore.Slot(str, str, float)
+    def update_index_price(self, exchange: str, raw_symbol: str, price: float):
+        """Update stored index price for a symbol/exchange."""
+        norm = normalize_symbol(raw_symbol)
+        if not norm:
+            return
+        if norm not in self.index_prices:
+            self.index_prices[norm] = {}
+        if self.index_prices[norm].get(exchange) != price:
+            self.index_prices[norm][exchange] = price
+            self._index_counter += 1
+
     # ─── ~30 Hz’de dict’i boşaltıp tabloyu güncelleyen metod ───
     def _flush_askbid_data(self):
         if not self._askbid_data:
@@ -3733,6 +3749,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 if max_ask is not None and (ask_val is None or ask_val > max_ask):
                     continue
 
+                idx_price = self.index_prices.get(sym, {}).get(exch)
+
                 rows.append([
                     sym,
                     exch,
@@ -3742,7 +3760,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     f"{ask3_val:.4f}" if isinstance(ask3_val, float) else "",
                     f"{bid_val:.4f}" if isinstance(bid_val, float) else "",
                     f"{bid3_val:.4f}" if isinstance(bid3_val, float) else "",
-                    "",
+                    f"{idx_price:.4f}" if isinstance(idx_price, float) else "",
                 ])
 
         return rows
@@ -3755,11 +3773,13 @@ class MainWindow(QtWidgets.QMainWindow):
         funding_c = getattr(self.model, "_mod_counter", 0)
         askbid_c = getattr(self.askbid_model, "_mod_counter", 0)
         ob_c = self._orderbook_counter
+        idx_c = self._index_counter
 
         if (
             funding_c == self._fr_diff_last_funding
             and askbid_c == self._fr_diff_last_askbid
             and ob_c == self._fr_diff_last_orderbook
+            and idx_c == self._fr_diff_last_index
         ):
             return
 
@@ -3779,12 +3799,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._fr_diff_last_funding = funding_c
         self._fr_diff_last_askbid = askbid_c
         self._fr_diff_last_orderbook = ob_c
+        self._fr_diff_last_index = idx_c
 
     def _reset_fr_diff_counters(self) -> None:
         """Force next refresh to recompute tables."""
         self._fr_diff_last_funding = -1
         self._fr_diff_last_askbid = -1
         self._fr_diff_last_orderbook = -1
+        self._fr_diff_last_index = -1
 
     def _update_fr_diff_models(self):
         """Recompute both FundingRateDiffModel tables from current data."""
@@ -3835,8 +3857,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._reset_fr_diff_counters()
         self._refresh_fr_diff_models()
         if self._fr_diff_params1 or self._fr_diff_params2:
-            if not self._fr_diff_timer.isActive():
-                self._fr_diff_timer.start()
+            self._fr_diff_timer.start()  # her durumda başlat
         else:
             self._fr_diff_timer.stop()
 
@@ -3959,7 +3980,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 # --- WebSocket feeders ---
-async def publish_binance(cb, status_cb):
+async def publish_binance(cb, status_cb, index_cb=None):
     url = BINANCE_URL
     # Fetch list of USDT perpetual futures to filter websocket updates
     try:
@@ -3991,6 +4012,13 @@ async def publish_binance(cb, status_cb):
                             if ts is not None:
                                 ts = ts / 1000
                             cb("Binance", sym, float(u["r"]) * 100, ts)
+                            if index_cb is not None:
+                                try:
+                                    idx = float(u.get("i"))
+                                except (TypeError, ValueError):
+                                    idx = None
+                                if idx is not None:
+                                    index_cb("Binance", u["s"], idx)
         except Exception as e:
             # bağlantı koptu → indicator’u mavi yap
             status_cb("Binance", False)
@@ -3998,7 +4026,7 @@ async def publish_binance(cb, status_cb):
             await asyncio.sleep(5)
 
 
-async def publish_okx(cb, status_cb):
+async def publish_okx(cb, status_cb, index_cb=None):
     # 1) REST’ten USDT-SWAP enstrümanları al
     async with aiohttp.ClientSession() as session:
         resp = await session.get(OKX_REST_INSTRUMENTS)
@@ -4013,6 +4041,10 @@ async def publish_okx(cb, status_cb):
         "op": "subscribe",
         "args": [{"channel": "funding-rate", "instId": inst} for inst in insts]
     }
+    mark_sub = {
+        "op": "subscribe",
+        "args": [{"channel": "mark-price", "instId": inst} for inst in insts]
+    } if index_cb else None
 
     while True:
         try:
@@ -4021,22 +4053,35 @@ async def publish_okx(cb, status_cb):
                 status_cb("OKX", True)
                 print("[OKX] Connected")
                 await ws.send(json.dumps(sub))
+                if mark_sub:
+                    await ws.send(json.dumps(mark_sub))
                 async for raw in ws:
                     m = json.loads(raw)
+                    arg = m.get("arg", {})
+                    channel = arg.get("channel")
                     for e in m.get("data", []):
-                        next_ts = None
-                        nft = e.get("fundingTime")
-                        if nft is not None:
-                            try:
-                                next_ts = int(nft) / 1000
-                            except (TypeError, ValueError):
-                                next_ts = None
-                        cb(
-                            "OKX",
-                            e["instId"],
-                            float(e["fundingRate"]) * 100,
-                            next_ts,
-                        )
+                        if channel == "funding-rate":
+                            next_ts = None
+                            nft = e.get("fundingTime")
+                            if nft is not None:
+                                try:
+                                    next_ts = int(nft) / 1000
+                                except (TypeError, ValueError):
+                                    next_ts = None
+                            cb(
+                                "OKX",
+                                e["instId"],
+                                float(e["fundingRate"]) * 100,
+                                next_ts,
+                            )
+                        elif channel == "mark-price" and index_cb:
+                            price = e.get("idxPx")
+                            sym = e.get("instId")
+                            if price is not None and sym:
+                                try:
+                                    index_cb("OKX", sym, float(price))
+                                except (TypeError, ValueError):
+                                    pass    
         except Exception as ex:
             # bağlantı koptu
             status_cb("OKX", False)
@@ -4044,7 +4089,7 @@ async def publish_okx(cb, status_cb):
             await asyncio.sleep(5)
 
 
-async def handle_bybit_batch(syms, cb, status_cb):
+async def handle_bybit_batch(syms, cb, status_cb, index_cb=None):
     sub = {"op": "subscribe", "args": [f"tickers.{s}" for s in syms]}
     while True:
         try:
@@ -4072,6 +4117,11 @@ async def handle_bybit_batch(syms, cb, status_cb):
                                 except (TypeError, ValueError):
                                     next_ts = None
                             cb("Bybit", d["symbol"], float(d["fundingRate"]) * 100, next_ts)
+                            if index_cb and "indexPrice" in d:
+                                try:
+                                    index_cb("Bybit", d["symbol"], float(d["indexPrice"]))
+                                except (TypeError, ValueError):
+                                    pass
         except Exception as e:
             # Mark connection down
             status_cb("Bybit", False)
@@ -4079,12 +4129,12 @@ async def handle_bybit_batch(syms, cb, status_cb):
             await asyncio.sleep(5)
 
 
-async def publish_bybit(cb, status_cb):
+async def publish_bybit(cb, status_cb, index_cb=None):
     # fetch all USDT swaps
     syms = await fetch_bybit_swaps()
     tasks = []
     for batch in [syms[i:i+BYBIT_BATCH_SIZE] for i in range(0, len(syms), BYBIT_BATCH_SIZE)]:
-        tasks.append(asyncio.create_task(handle_bybit_batch(batch, cb, status_cb)))
+        tasks.append(asyncio.create_task(handle_bybit_batch(batch, cb, status_cb, index_cb)))
         await asyncio.sleep(1)
     try:
         await asyncio.gather(*tasks)
@@ -4094,7 +4144,7 @@ async def publish_bybit(cb, status_cb):
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
 
-async def handle_bitget_batch(syms, cb, status_cb):
+async def handle_bitget_batch(syms, cb, status_cb, index_cb=None):
     sub = {"op":"subscribe", "args":[{"instType":"USDT-FUTURES","channel":"ticker","instId":s} for s in syms]}
     while True:
         try:
@@ -4114,16 +4164,21 @@ async def handle_bitget_batch(syms, cb, status_cb):
                                     float(d["fundingRate"]) * 100,
                                     next_ts,
                                 )
+                                if index_cb and d.get("indexPrice") is not None:
+                                    try:
+                                        index_cb("Bitget", d["instId"], float(d["indexPrice"]))
+                                    except (TypeError, ValueError):
+                                        pass
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget] Error: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
 
-async def publish_bitget(cb, status_cb):
+async def publish_bitget(cb, status_cb, index_cb=None):
     syms = await fetch_bitget_swaps()
     tasks = []
     for batch in [syms[i:i+50] for i in range(0, len(syms), 50)]:
-        tasks.append(asyncio.create_task(handle_bitget_batch(batch, cb, status_cb)))
+        tasks.append(asyncio.create_task(handle_bitget_batch(batch, cb, status_cb, index_cb)))
         await asyncio.sleep(1)
     try:
         await asyncio.gather(*tasks)
@@ -4134,7 +4189,7 @@ async def publish_bitget(cb, status_cb):
         raise
 
 
-async def publish_gateio(cb, status_cb):
+async def publish_gateio(cb, status_cb, index_cb=None):
     """
     Fetch Gate.io USDT‐margined futures funding‐rate updates,
     and notify status via status_cb(exchange, connected: bool).
@@ -4168,6 +4223,11 @@ async def publish_gateio(cb, status_cb):
                                     float(d["funding_rate"]) * 100,
                                     next_ts,
                                 )
+                                if index_cb and d.get("index_price") is not None:
+                                    try:
+                                        index_cb("Gateio", d["contract"], float(d["index_price"]))
+                                    except (TypeError, ValueError):
+                                        pass
 
         except Exception as e:
             # connection down
@@ -4494,14 +4554,12 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
         except InvalidStatusCode as e:
             status_cb("Bitget", False)
             print(f"[Bitget Orderbook] Handshake failed: {e.status_code}")
-            print(f"[Bitget Orderbook] Subscription payload: {json.dumps(sub)}")
             if e.headers:
                 print(f"[Bitget Orderbook] Response headers: {dict(e.headers)}")
             await asyncio.sleep(5)
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget Orderbook] Error: {e}, reconnecting in 5s")
-            print(f"[Bitget Orderbook] Subscription payload: {json.dumps(sub)}")
             await asyncio.sleep(5)
 
 async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
@@ -4627,11 +4685,11 @@ def main():
 
 
         # WebSocket’leri sarılmış callback ile başlat
-        window._ws_tasks.append(loop.create_task(publish_binance (fr_cb, window._update_status_fr)))
-        window._ws_tasks.append(loop.create_task(publish_okx     (fr_cb, window._update_status_fr)))
-        window._ws_tasks.append(loop.create_task(publish_bybit   (fr_cb, window._update_status_fr)))
-        window._ws_tasks.append(loop.create_task(publish_bitget  (fr_cb, window._update_status_fr)))
-        window._ws_tasks.append(loop.create_task(publish_gateio  (fr_cb, window._update_status_fr)))
+        window._ws_tasks.append(loop.create_task(publish_binance (fr_cb, window._update_status_fr, window.update_index_price)))
+        window._ws_tasks.append(loop.create_task(publish_okx     (fr_cb, window._update_status_fr, window.update_index_price)))
+        window._ws_tasks.append(loop.create_task(publish_bybit   (fr_cb, window._update_status_fr, window.update_index_price)))
+        window._ws_tasks.append(loop.create_task(publish_bitget  (fr_cb, window._update_status_fr, window.update_index_price)))
+        window._ws_tasks.append(loop.create_task(publish_gateio  (fr_cb, window._update_status_fr, window.update_index_price)))
 
         # Start ask/bid feeds immediately but keep the tab closed
         window.start_askbid_feeds()
