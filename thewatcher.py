@@ -268,7 +268,7 @@ class FlashDelegate(QtWidgets.QStyledItemDelegate):
         self._flash_cells: dict[tuple[int,int], tuple[float,bool]] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_timeout)
-        self._timer.start(50)
+        self._timer.setInterval(50)
         self.enabled = True
 
     def setEnabled(self, enabled: bool):
@@ -282,6 +282,8 @@ class FlashDelegate(QtWidgets.QStyledItemDelegate):
         if not self.enabled:
             return      #animasyonlar kapalıysa hiç işleme alma
         self._flash_cells[(index.row(), index.column())] = (time.time(), positive)
+        if not self._timer.isActive():
+            self._timer.start()
 
     def paint(self, painter: QtGui.QPainter, option, index):
         key = (index.row(), index.column())
@@ -299,8 +301,10 @@ class FlashDelegate(QtWidgets.QStyledItemDelegate):
 
     def _on_timeout(self):
         view = self.parent()
-        if view:
+        if view and self._flash_cells:
             view.viewport().update()
+        elif not self._flash_cells and self._timer.isActive():
+            self._timer.stop()
 
 
 # --- Multi-select filter dropdown ---
@@ -753,6 +757,8 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         self._previous = {}                     # (symbol,exchange) -> float (rounded to 4dp)
         # (symbol, exchange) -> next funding timestamp
         self._next_funding_ts: dict[tuple[str, str], float] = {}
+        # quick lookup for symbol -> row index
+        self._row_map: dict[str, int] = {}
         self.delegate  = None
         self._mod_counter = 0                   # incremented on data updates
 
@@ -820,6 +826,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
                                  len(self._symbols))
             self._symbols.append(sym)
             self._data[sym] = {}
+            self._row_map[sym] = len(self._symbols) - 1
             self.endInsertRows()
             
             # Emit signal for new symbol
@@ -830,7 +837,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
         if self._data.get(sym, {}).get(exchange) != rate_str:
             modified = True
         self._data[sym][exchange] = rate_str
-        row = self._symbols.index(sym)
+        row = self._row_map.get(sym, self._symbols.index(sym))
         col = FUNDING_COLUMNS.index(exchange)
         src_idx = self.index(row, col)
         # update the source model cell
@@ -887,6 +894,7 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         self._prev    = {}           # { (sym, exch, side): float } , side in {"bid","ask"}
         self.delegate = None
         self._mod_counter = 0        # incremented on data updates
+        self._row_map: dict[str, int] = {}
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._symbols)
@@ -944,6 +952,7 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
                                  len(self._symbols))
             self._symbols.append(sym)
             self._data[sym] = {}
+            self._row_map[sym] = len(self._symbols) - 1
             self.endInsertRows()
             self.symbolsUpdated.emit(self._symbols.copy())
             modified = True
@@ -965,7 +974,7 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         self._data[sym][exchange] = (bid, ask, bid_qty, ask_qty)
 
         # 5) Hücreyi güncelle
-        row = self._symbols.index(sym)
+        row = self._row_map.get(sym, self._symbols.index(sym))
         ei  = AB_EXCHANGES.index(exchange)
         ask_col = 1 + 2*ei
         bid_col = ask_col + 1
@@ -1926,11 +1935,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.arb_close_threshold = 0.002
 
 
-        # Ask/Bid flush timer (~30 Hz)
+        # Ask/Bid flush timer (~10 Hz)
         self._askbid_data = {}
         self._askbid_timer = QtCore.QTimer(self)
         self._askbid_timer.timeout.connect(self._flush_askbid_data)
-        self._askbid_timer.start(33)
+        self._askbid_timer.start(100)
 
         # Arbitrage işlemleri timer (500 ms)
         self._arb_running = False
@@ -3627,7 +3636,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _enqueue_askbid(self, exchange, symbol, bid, ask, bid_qty=None, ask_qty=None):
         self._askbid_data[(exchange, symbol)] = (bid, ask, bid_qty, ask_qty)
         if not self._askbid_timer.isActive():
-            self._askbid_timer.start(33)
+            self._askbid_timer.start(100)
 
     def _enqueue_orderbook(self, exchange: str, symbol: str,
                            bids: list[tuple[float, float]],
@@ -3653,7 +3662,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.index_prices[norm][exchange] = price
             self._index_counter += 1
 
-    # ─── ~30 Hz’de dict’i boşaltıp tabloyu güncelleyen metod ───
+    # ─── ~10 Hz’de dict’i boşaltıp tabloyu güncelleyen metod ───
     def _flush_askbid_data(self):
         if not self._askbid_data:
             self._askbid_timer.stop()
@@ -3732,12 +3741,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._arb_running:
             return
         
-        data = {s: d.copy() for s, d in self.askbid_model._data.items()}
-        funding = self.current_funding.copy()
+        data = self.askbid_model._data
+        funding = self.current_funding
         worker = ArbitrageTask(
             data,
             funding,
-            self._arb_map.copy(),
+            self._arb_map,
             self.ask_fee_rate,
             self.bid_fee_rate,
             self.arb_threshold,
@@ -4126,6 +4135,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         self._really_closing = True
+        for t in list(self._ws_tasks):
+            t.cancel()
+        self._ws_tasks.clear()
         super().closeEvent(event)
 
 
@@ -4170,6 +4182,8 @@ async def publish_binance(cb, status_cb, index_cb=None):
                                     idx = None
                                 if idx is not None:
                                     index_cb("Binance", u["s"], idx)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             # bağlantı koptu → indicator’u mavi yap
             status_cb("Binance", False)
@@ -4235,7 +4249,9 @@ async def publish_okx(cb, status_cb, index_cb=None):
                                 try:
                                     index_cb("OKX", sym, float(price))
                                 except (TypeError, ValueError):
-                                    pass    
+                                    pass
+        except asyncio.CancelledError:
+            break    
         except Exception as ex:
             # bağlantı koptu
             status_cb("OKX", False)
@@ -4276,6 +4292,8 @@ async def handle_bybit_batch(syms, cb, status_cb, index_cb=None):
                                     index_cb("Bybit", d["symbol"], float(d["indexPrice"]))
                                 except (TypeError, ValueError):
                                     pass
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             # Mark connection down
             status_cb("Bybit", False)
@@ -4323,6 +4341,8 @@ async def handle_bitget_batch(syms, cb, status_cb, index_cb=None):
                                         index_cb("Bitget", d["instId"], float(d["indexPrice"]))
                                     except (TypeError, ValueError):
                                         pass
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget] Error: {e}, reconnecting in 5s")
@@ -4382,7 +4402,8 @@ async def publish_gateio(cb, status_cb, index_cb=None):
                                         index_cb("Gateio", d["contract"], float(d["index_price"]))
                                     except (TypeError, ValueError):
                                         pass
-
+        except asyncio.CancelledError:
+            break                                    
         except Exception as e:
             # connection down
             status_cb("Gateio", False)
@@ -4408,6 +4429,8 @@ async def publish_binance_askbid(cb, status_cb):
                             float(msg.get("B", 0)),
                             float(msg.get("A", 0)),
                         )
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("Binance", False)
             print(f"[Binance AskBid] Error: {e}, reconnecting in 5s")
@@ -4452,6 +4475,8 @@ async def publish_okx_askbid(cb, status_cb):
                             ask_price = float(asks[0][0])
                             ask_qty = float(asks[0][1])
                             cb("OKX", instId, bid_price, ask_price, bid_qty, ask_qty)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("OKX", False)
             print(f"[OKX AskBid] Error: {e}, reconnect in 5s")
@@ -4490,6 +4515,8 @@ async def publish_bybit_askbid(cb, status_cb):
                         ask_price = float(asks[0][0])
                         ask_qty = float(asks[0][1])
                         cb("Bybit", sym, bid_price, ask_price, bid_qty, ask_qty)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("Bybit", False)
             print(f"[Bybit AskBid] Error: {e}, reconnect in 5s")
@@ -4538,7 +4565,8 @@ async def publish_bitget_askbid(cb, status_cb):
                                     float(bid_sz) if bid_sz is not None else None,
                                     float(ask_sz) if ask_sz is not None else None,
                                 )
-
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("Bitget", False)
             print(f"[Bitget AskBid] Error: {e}, reconnect in 5s")
@@ -4581,6 +4609,8 @@ async def publish_gateio_askbid(cb, status_cb):
                             float(r.get("B", 0)),
                             float(r.get("A", 0)),
                         )
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("Gateio", False)
             print(f"[Gateio AskBid] Error: {e}, reconnecting in 5s")
@@ -4603,6 +4633,8 @@ async def publish_binance_orderbook(symbols: list[str], cb, status_cb):
                     bids = [(float(p), float(q)) for p, q in data.get("b", [])[:3]]
                     asks = [(float(p), float(q)) for p, q in data.get("a", [])[:3]]
                     cb(sym, bids, asks)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("Binance", False)
             print(f"[Binance Orderbook] Error: {e}, reconnecting in 5s")
@@ -4636,6 +4668,8 @@ async def publish_okx_orderbook(symbols: list[str], cb, status_cb):
                         inst = entry.get("instId")
                         if inst:
                             cb(inst, bids, asks)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("OKX", False)
             print(f"[OKX Orderbook] Error: {e}, reconnecting in 5s")
@@ -4666,6 +4700,8 @@ async def publish_bybit_orderbook(symbols: list[str], cb, status_cb):
                         (float(p), float(q)) for p, q in data.get("a", [])[:3]
                     ]
                     cb(sym, bids, asks)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("Bybit", False)
             print(f"[Bybit Orderbook] Error: {e}, reconnecting in 5s")
@@ -4705,6 +4741,8 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
                             for a in entry.get("asks", [])[:3]
                         ]
                         cb(inst, bids, asks)
+        except asyncio.CancelledError:
+            break
         except InvalidStatusCode as e:
             status_cb("Bitget", False)
             print(f"[Bitget Orderbook] Handshake failed: {e.status_code}")
@@ -4768,6 +4806,8 @@ async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
                                 break
                         if sym:
                             cb(sym, bids, asks)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             status_cb("Gateio", False)
             print(f"[Gateio Orderbook] Error: {e}, reconnecting in 5s")
