@@ -4413,6 +4413,8 @@ async def publish_gateio(cb, status_cb, index_cb=None):
 
 async def publish_binance_askbid(cb, status_cb):
     url = "wss://fstream.binance.com/ws/!bookTicker"
+    # Fetch valid USDT perpetual symbols once
+    valid = set(await fetch_binance_futures())
     while True:
         try:
             async with websockets.connect(url) as ws:
@@ -4420,7 +4422,7 @@ async def publish_binance_askbid(cb, status_cb):
                 print("[Binance AskBid] Connected")
                 async for raw in ws:
                     msg = json.loads(raw)
-                    if msg.get("e") == "bookTicker":
+                    if msg.get("e") == "bookTicker" and msg.get("s") in valid:
                         cb(
                             "Binance",
                             msg["s"],
