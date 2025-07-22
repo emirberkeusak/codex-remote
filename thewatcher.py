@@ -109,6 +109,22 @@ def _parse_duration(text: str) -> int | None:
     h, m_, s = map(int, m.groups())
     return h * 3600 + m_ * 60 + s
 
+def _loop_running() -> bool:
+    """Return True if an event loop is currently running."""
+    try:
+        loop = asyncio.get_running_loop()
+        return not loop.is_closed()
+    except RuntimeError:
+        return False
+
+
+async def _safe_sleep(delay: float) -> None:
+    """Sleep without raising when the loop is closed."""
+    try:
+        await asyncio.sleep(delay)
+    except RuntimeError:
+        pass
+
 
 # Supabase configuration
 SUPABASE_URL = "https://obtqpnfcfmybasnzclqf.supabase.co"
@@ -4218,10 +4234,12 @@ async def publish_binance(cb, status_cb, index_cb=None):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             # bağlantı koptu → indicator’u mavi yap
             status_cb("Binance", False)
             print(f"[Binance] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 
 async def publish_okx(cb, status_cb, index_cb=None):
@@ -4286,10 +4304,12 @@ async def publish_okx(cb, status_cb, index_cb=None):
         except asyncio.CancelledError:
             break    
         except Exception as ex:
+            if not _loop_running():
+                break
             # bağlantı koptu
             status_cb("OKX", False)
             print(f"[OKX] Error: {ex}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 
 async def handle_bybit_batch(syms, cb, status_cb, index_cb=None):
@@ -4328,10 +4348,12 @@ async def handle_bybit_batch(syms, cb, status_cb, index_cb=None):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             # Mark connection down
             status_cb("Bybit", False)
             print(f"[Bybit] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 
 async def publish_bybit(cb, status_cb, index_cb=None):
@@ -4385,9 +4407,11 @@ async def handle_bitget_batch(syms, cb, status_cb, index_cb=None):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("Bitget", False)
             print(f"[Bitget] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 async def publish_bitget(cb, status_cb, index_cb=None):
     syms = await fetch_bitget_swaps()
@@ -4447,9 +4471,11 @@ async def publish_gateio(cb, status_cb, index_cb=None):
             break                                    
         except Exception as e:
             # connection down
+            if not _loop_running():
+                break
             status_cb("Gateio", False)
             print(f"[Gateio] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 
 async def publish_binance_askbid(cb, status_cb):
@@ -4475,9 +4501,11 @@ async def publish_binance_askbid(cb, status_cb):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("Binance", False)
             print(f"[Binance AskBid] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 # --- OKX Ask/Bid Feeder ---
 async def publish_okx_askbid(cb, status_cb):
@@ -4521,9 +4549,11 @@ async def publish_okx_askbid(cb, status_cb):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("OKX", False)
             print(f"[OKX AskBid] Error: {e}, reconnect in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 
 
@@ -4561,9 +4591,11 @@ async def publish_bybit_askbid(cb, status_cb):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("Bybit", False)
             print(f"[Bybit AskBid] Error: {e}, reconnect in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 
 
@@ -4619,9 +4651,11 @@ async def publish_bitget_askbid(cb, status_cb):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("Bitget", False)
             print(f"[Bitget AskBid] Error: {e}, reconnect in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 
 
@@ -4663,9 +4697,11 @@ async def publish_gateio_askbid(cb, status_cb):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("Gateio", False)
             print(f"[Gateio AskBid] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 async def publish_binance_orderbook(symbols: list[str], cb, status_cb):
     streams = '/'.join(f"{s.lower()}@depth5@100ms" for s in symbols)
@@ -4687,9 +4723,11 @@ async def publish_binance_orderbook(symbols: list[str], cb, status_cb):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("Binance", False)
             print(f"[Binance Orderbook] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 async def publish_okx_orderbook(symbols: list[str], cb, status_cb):
     sub = {
@@ -4722,9 +4760,11 @@ async def publish_okx_orderbook(symbols: list[str], cb, status_cb):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("OKX", False)
             print(f"[OKX Orderbook] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 async def publish_bybit_orderbook(symbols: list[str], cb, status_cb):
     topics = [f"orderbook.50.{normalize_pair(s)}" for s in symbols]
@@ -4754,9 +4794,11 @@ async def publish_bybit_orderbook(symbols: list[str], cb, status_cb):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("Bybit", False)
             print(f"[Bybit Orderbook] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
     sub = {
@@ -4807,11 +4849,14 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
             print(f"[Bitget Orderbook] Handshake failed: {e.status_code}")
             if e.headers:
                 print(f"[Bitget Orderbook] Response headers: {dict(e.headers)}")
-            await asyncio.sleep(5)
+            if _loop_running():
+                await _safe_sleep(5)
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("Bitget", False)
             print(f"[Bitget Orderbook] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
     url = GATEIO_WS_URL
@@ -4868,9 +4913,11 @@ async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
         except asyncio.CancelledError:
             break
         except Exception as e:
+            if not _loop_running():
+                break
             status_cb("Gateio", False)
             print(f"[Gateio Orderbook] Error: {e}, reconnecting in 5s")
-            await asyncio.sleep(5)
+            await _safe_sleep(5)
 
 
 # --- Application entrypoint ---
