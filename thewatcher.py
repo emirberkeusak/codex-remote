@@ -292,7 +292,7 @@ class FlashDelegate(QtWidgets.QStyledItemDelegate):
     DEFAULT_DURATION = 0.5  # seconds
 
     def __init__(self, parent=None, *, duration: float | None = None,
-                 timer_interval: int = 16):
+                 timer_interval: int = 50):
         super().__init__(parent)
         self.duration = (duration if duration is not None
                          else self.DEFAULT_DURATION)
@@ -2510,6 +2510,13 @@ class MainWindow(QtWidgets.QMainWindow):
         v1 = QtWidgets.QVBoxLayout(box1)
 
         row1_top = QtWidgets.QHBoxLayout()
+        row1_top.addWidget(QtWidgets.QLabel("Symbols:"))
+        self.fr_symbols_dropdown1 = MultiSelectDropdown()
+        row1_top.addWidget(self.fr_symbols_dropdown1)
+        self.btn_generate_fr_symbols1 = QtWidgets.QPushButton("Generate")
+        row1_top.addWidget(self.btn_generate_fr_symbols1)
+
+        row1_top.addSpacing(20)
         self.max_fr_input1a = QtWidgets.QLineEdit()
         self.max_fr_input1a.setFixedWidth(80)
         row1_top.addWidget(QtWidgets.QLabel("Max Funding Rate:"))
@@ -2588,6 +2595,12 @@ class MainWindow(QtWidgets.QMainWindow):
         header1.setSortIndicator(2, QtCore.Qt.AscendingOrder)
         self.fr_diff_table1.sortByColumn(2, QtCore.Qt.AscendingOrder)
         v1.addWidget(self.fr_diff_table1)
+        self.fr_diff_model1.symbolsUpdated.connect(
+            lambda syms: self.fr_symbols_dropdown1.set_items(syms)
+        )
+        self.fr_symbols_dropdown1.selectionChanged.connect(
+            self.fr_diff_proxy1.set_symbol_filter
+        )
         layout.addWidget(box1)
 
         # Second table and controls
@@ -2696,6 +2709,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_export_fr_diff.clicked.connect(self.on_export_fr_diff_excel)
 
         # Connect filters
+        self.btn_generate_fr_symbols1.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_fr_diff1a.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_cd1a.clicked.connect(self._update_fr_diff_models)
         self.btn_generate_ask_depth1.clicked.connect(self._update_fr_diff_models)
@@ -4048,6 +4062,11 @@ class MainWindow(QtWidgets.QMainWindow):
         min_ask1 = _parse_float(self.min_ask_depth_input1.text())
         bid1 = _parse_float(self.max_bid_depth_input1.text())
         min_bid1 = _parse_float(self.min_bid_depth_input1.text())
+        symbols1: set[str] | None = None
+        if hasattr(self, "fr_symbols_dropdown1"):
+            sel = self.fr_symbols_dropdown1.get_selected_items()
+            if sel and len(sel) < len(self.fr_symbols_dropdown1._items):
+                symbols1 = set(sel)
 
         if (
             min1 is None
@@ -4055,12 +4074,14 @@ class MainWindow(QtWidgets.QMainWindow):
             and cd1 is None
             and ask1 is None
             and min_ask1 is None
+            and not symbols1
             and bid1 is None
             and min_bid1 is None
         ):
             self._fr_diff_params1 = None
         else:
             self._fr_diff_params1 = {
+                "symbols": symbols1,
                 "min_fr": min1,
                 "max_fr": max1,
                 "max_cd": cd1,
