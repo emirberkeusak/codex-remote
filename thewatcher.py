@@ -559,6 +559,30 @@ class SymbolFilterProxyModel(QtCore.QSortFilterProxyModel):
         return symbol in self._filter_symbols
     
 
+class FundingRateDiffProxyModel(SymbolFilterProxyModel):
+    """Proxy model with numeric sorting for Funding Rate column."""
+
+    def lessThan(self, left: QtCore.QModelIndex, right: QtCore.QModelIndex):
+        col = left.column()
+        asc = self.sortOrder() == QtCore.Qt.AscendingOrder
+
+        if col == 2:  # Funding Rate column
+            vl = _parse_float(self.sourceModel().data(left, QtCore.Qt.DisplayRole))
+            vr = _parse_float(self.sourceModel().data(right, QtCore.Qt.DisplayRole))
+            if vl is not None and vr is not None:
+                result = vl < vr
+            else:
+                vl = self.sourceModel().data(left, QtCore.Qt.DisplayRole)
+                vr = self.sourceModel().data(right, QtCore.Qt.DisplayRole)
+                result = str(vl) < str(vr)
+        else:
+            vl = self.sourceModel().data(left, QtCore.Qt.DisplayRole)
+            vr = self.sourceModel().data(right, QtCore.Qt.DisplayRole)
+            result = str(vl) < str(vr)
+
+        return result if asc else not result
+    
+
 
 
 class ArbitrajEvent:
@@ -2557,12 +2581,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fr_diff_table1.setShowGrid(True)
         self.fr_diff_table1.verticalHeader().setVisible(False)
         self.fr_diff_model1 = FundingRateDiffModel()
-        self.fr_diff_proxy1 = SymbolFilterProxyModel()
+        self.fr_diff_proxy1 = FundingRateDiffProxyModel()
         self.fr_diff_proxy1.setSourceModel(self.fr_diff_model1)
         self.fr_diff_proxy1.setDynamicSortFilter(True)
         self.fr_diff_table1.setModel(self.fr_diff_proxy1)
         header1 = self.fr_diff_table1.horizontalHeader()
+        header1.setSectionsClickable(True)
+        header1.setSortIndicatorShown(True)
         header1.setSectionResizeMode(QHeaderView.Stretch)
+        self.fr_diff_table1.setSortingEnabled(True)
+        header1.setSortIndicator(2, QtCore.Qt.AscendingOrder)
+        self.fr_diff_table1.sortByColumn(2, QtCore.Qt.AscendingOrder)
         v1.addWidget(self.fr_diff_table1)
         layout.addWidget(box1)
 
@@ -2646,12 +2675,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fr_diff_table2.setShowGrid(True)
         self.fr_diff_table2.verticalHeader().setVisible(False)
         self.fr_diff_model2 = FundingRateDiffModel()
-        self.fr_diff_proxy2 = SymbolFilterProxyModel()
+        self.fr_diff_proxy2 = FundingRateDiffProxyModel()
         self.fr_diff_proxy2.setSourceModel(self.fr_diff_model2)
         self.fr_diff_proxy2.setDynamicSortFilter(True)
         self.fr_diff_table2.setModel(self.fr_diff_proxy2)
         header2 = self.fr_diff_table2.horizontalHeader()
+        header2.setSectionsClickable(True)
+        header2.setSortIndicatorShown(True)
         header2.setSectionResizeMode(QHeaderView.Stretch)
+        self.fr_diff_table2.setSortingEnabled(True)
+        header2.setSortIndicator(2, QtCore.Qt.AscendingOrder)
+        self.fr_diff_table2.sortByColumn(2, QtCore.Qt.AscendingOrder)
         v2.addWidget(self.fr_diff_table2)
         self.fr_diff_model2.symbolsUpdated.connect(
             lambda syms: self.fr_symbols_dropdown2.set_items(syms)
