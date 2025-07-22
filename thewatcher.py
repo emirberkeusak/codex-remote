@@ -287,12 +287,19 @@ def normalize_symbol(sym: str) -> str | None:
 
 # --- Flash Delegate for red/green animation ---
 class FlashDelegate(QtWidgets.QStyledItemDelegate):
-    def __init__(self, parent=None):
+    """Delegate that temporarily flashes updated cells."""
+
+    DEFAULT_DURATION = 0.5  # seconds
+
+    def __init__(self, parent=None, *, duration: float | None = None,
+                 timer_interval: int = 16):
         super().__init__(parent)
-        self._flash_cells: dict[tuple[int,int], tuple[float,bool]] = {}
+        self.duration = (duration if duration is not None
+                         else self.DEFAULT_DURATION)
+        self._flash_cells: dict[tuple[int, int], tuple[float, bool]] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_timeout)
-        self._timer.setInterval(50)
+        self._timer.setInterval(timer_interval)
         self.enabled = True
 
     def setEnabled(self, enabled: bool):
@@ -314,9 +321,9 @@ class FlashDelegate(QtWidgets.QStyledItemDelegate):
         if key in self._flash_cells:
             ts, positive = self._flash_cells[key]
             elapsed = time.time() - ts
-            DURATION = 0.5   # ← 1.0’den 0.5’e indiriyoruz
-            if elapsed < DURATION:
-                alpha = int(255 * (1 - elapsed / DURATION))
+            duration = self.duration
+            if elapsed < duration:
+                alpha = int(255 * (1 - elapsed / duration))
                 color = QtGui.QColor(0,255,0,alpha) if positive else QtGui.QColor(255,0,0,alpha)
                 painter.fillRect(option.rect, color)
             else:
