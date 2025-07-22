@@ -564,24 +564,19 @@ class FundingRateDiffProxyModel(SymbolFilterProxyModel):
 
     def lessThan(self, left: QtCore.QModelIndex, right: QtCore.QModelIndex):
         col = left.column()
-        asc = self.sortOrder() == QtCore.Qt.AscendingOrder
 
         if col == 2:  # Funding Rate column
             vl = _parse_float(self.sourceModel().data(left, QtCore.Qt.DisplayRole))
             vr = _parse_float(self.sourceModel().data(right, QtCore.Qt.DisplayRole))
             if vl is not None and vr is not None:
-                result = vl < vr
-            else:
-                vl = self.sourceModel().data(left, QtCore.Qt.DisplayRole)
-                vr = self.sourceModel().data(right, QtCore.Qt.DisplayRole)
-                result = str(vl) < str(vr)
-        else:
+                return vl < vr
             vl = self.sourceModel().data(left, QtCore.Qt.DisplayRole)
             vr = self.sourceModel().data(right, QtCore.Qt.DisplayRole)
-            result = str(vl) < str(vr)
+            return str(vl) < str(vr)
 
-        return result if asc else not result
-    
+        vl = self.sourceModel().data(left, QtCore.Qt.DisplayRole)
+        vr = self.sourceModel().data(right, QtCore.Qt.DisplayRole)
+        return str(vl) < str(vr)
 
 
 
