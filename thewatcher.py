@@ -732,6 +732,16 @@ def next_gateio_funding_ts(now: float | None = None) -> float:
     interval = 8 * 3600  # funding every 8 hours
     return ((int(now) // interval) + 1) * interval
 
+async def _bitget_ping_loop(ws, interval: int = 15) -> None:
+    """Periodically send Bitget-specific ping messages."""
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            await ws.send(json.dumps({"op": "ping"}))
+    except asyncio.CancelledError:
+        pass
+
+
 async def fetch_gateio_swaps() -> list[str]:
     async with aiohttp.ClientSession() as s:
         r = await s.get(GATEIO_REST_TICKERS)
@@ -4347,23 +4357,31 @@ async def handle_bitget_batch(syms, cb, status_cb, index_cb=None):
                 status_cb("Bitget", True)
                 print(f"[Bitget] Batch {len(syms)} connected")
                 await ws.send(json.dumps(sub))
-                async for raw in ws:
-                    data = json.loads(raw)
-                    if data.get("action") in ("snapshot","update"):
-                        next_ts = next_bitget_funding_ts()
-                        for d in data.get("data", []):
-                            if "instId" in d and "fundingRate" in d:
-                                cb(
-                                    "Bitget",
-                                    d["instId"],
-                                    float(d["fundingRate"]) * 100,
-                                    next_ts,
-                                )
+                ping_task = asyncio.create_task(_bitget_ping_loop(ws))
+                try:
+                    async for raw in ws:
+                        data = json.loads(raw)
+                        if data.get("op") == "ping":
+                            await ws.send(json.dumps({"op": "pong"}))
+                            continue
+                        if data.get("action") in ("snapshot", "update"):
+                            next_ts = next_bitget_funding_ts()
+                            for d in data.get("data", []):
+                                if "instId" in d and "fundingRate" in d:
+                                    cb(
+                                        "Bitget",
+                                        d["instId"],
+                                        float(d["fundingRate"]) * 100,
+                                        next_ts,
+                                    )
                                 if index_cb and d.get("indexPrice") is not None:
                                     try:
                                         index_cb("Bitget", d["instId"], float(d["indexPrice"]))
                                     except (TypeError, ValueError):
                                         pass
+                finally:
+                    ping_task.cancel()
+                    await asyncio.gather(ping_task, return_exceptions=True)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -4572,24 +4590,32 @@ async def publish_bitget_askbid(cb, status_cb):
                 print("[Bitget AskBid] Connected")
                 await ws.send(json.dumps(sub))
 
-                async for raw in ws:
-                    m = json.loads(raw)
-                    if m.get("action") in ("snapshot", "update"):
-                        for d in m.get("data", []):
-                            inst = d.get("instId")
-                            bid  = d.get("bidPr")
-                            ask  = d.get("askPr")
-                            bid_sz = d.get("bidSz")
-                            ask_sz = d.get("askSz")
-                            if inst and bid is not None and ask is not None:
-                                cb(
-                                    "Bitget",
-                                    inst,
-                                    float(bid),
-                                    float(ask),
-                                    float(bid_sz) if bid_sz is not None else None,
-                                    float(ask_sz) if ask_sz is not None else None,
-                                )
+                ping_task = asyncio.create_task(_bitget_ping_loop(ws))
+                try:
+                    async for raw in ws:
+                        m = json.loads(raw)
+                        if m.get("op") == "ping":
+                            await ws.send(json.dumps({"op": "pong"}))
+                            continue
+                        if m.get("action") in ("snapshot", "update"):
+                            for d in m.get("data", []):
+                                inst = d.get("instId")
+                                bid  = d.get("bidPr")
+                                ask  = d.get("askPr")
+                                bid_sz = d.get("bidSz")
+                                ask_sz = d.get("askSz")
+                                if inst and bid is not None and ask is not None:
+                                    cb(
+                                        "Bitget",
+                                        inst,
+                                        float(bid),
+                                        float(ask),
+                                        float(bid_sz) if bid_sz is not None else None,
+                                        float(ask_sz) if ask_sz is not None else None,
+                                    )
+                finally:
+                    ping_task.cancel()
+                    await asyncio.gather(ping_task, return_exceptions=True)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -4746,26 +4772,34 @@ async def publish_bitget_orderbook(symbols: list[str], cb, status_cb):
                 status_cb("Bitget", True)
                 print("[Bitget Orderbook] Connected")
                 await ws.send(json.dumps(sub))
-                async for raw in ws:
-                    if DEBUG_BITGET_ORDERBOOK:
-                        print(f"[Bitget Orderbook Raw] {raw}")
-                    m = json.loads(raw)
-                    if m.get("action") not in ("snapshot", "update"):
-                        continue
-                    inst = None
-                    for entry in m.get("data", []):
-                        inst = entry.get("instId") or m.get("arg", {}).get("instId")
-                        if not inst:
+                ping_task = asyncio.create_task(_bitget_ping_loop(ws))
+                try:
+                    async for raw in ws:
+                        if DEBUG_BITGET_ORDERBOOK:
+                            print(f"[Bitget Orderbook Raw] {raw}")
+                        m = json.loads(raw)
+                        if m.get("op") == "ping":
+                            await ws.send(json.dumps({"op": "pong"}))
                             continue
-                        bids = [
-                            (float(b[0]), float(b[1]))
-                            for b in entry.get("bids", [])[:3]
-                        ]
-                        asks = [
-                            (float(a[0]), float(a[1]))
-                            for a in entry.get("asks", [])[:3]
-                        ]
-                        cb(inst, bids, asks)
+                        if m.get("action") not in ("snapshot", "update"):
+                            continue
+                        inst = None
+                        for entry in m.get("data", []):
+                            inst = entry.get("instId") or m.get("arg", {}).get("instId")
+                            if not inst:
+                                continue
+                            bids = [
+                                (float(b[0]), float(b[1]))
+                                for b in entry.get("bids", [])[:3]
+                            ]
+                            asks = [
+                                (float(a[0]), float(a[1]))
+                                for a in entry.get("asks", [])[:3]
+                            ]
+                            cb(inst, bids, asks)
+                finally:
+                    ping_task.cancel()
+                    await asyncio.gather(ping_task, return_exceptions=True)
         except asyncio.CancelledError:
             break
         except InvalidStatusCode as e:
