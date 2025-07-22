@@ -1949,11 +1949,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._askbid_timer.timeout.connect(self._flush_askbid_data)
         self._askbid_timer.start(100)
 
-        # Arbitrage işlemleri timer (500 ms)
+        # Arbitrage işlemleri timer (500 ms, initially stopped)
         self._arb_running = False
         self._arb_timer = QtCore.QTimer(self)
         self._arb_timer.timeout.connect(self._start_arbitrage_worker)
-        self._arb_timer.start(500)
 
         # Funding Rate Diff refresh timer (1s, initially stopped)
         self._fr_diff_params1 = None  # type: dict | None
@@ -1971,10 +1970,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(int)
     def _on_tab_closed(self, index: int):
-        if self.tabs.tabText(index) == "Funding Rate Diff":
+        tab_text = self.tabs.tabText(index)
+        if tab_text == "Funding Rate Diff":
             self._fr_diff_timer.stop()
             self._fr_diff_params1 = None
             self._fr_diff_params2 = None
+        elif tab_text == "Arbitraj Diff":
+            self._arb_timer.stop()
         self.tabs.removeTab(index)
 
 
@@ -3482,6 +3484,11 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             QtWidgets.QMessageBox.critical(self, "Hata", f"Excel kaydı başarısız:\n{msg}")
 
+    def _start_arb_timer(self):
+        """Start arbitrage timer if not already running."""
+        if not self._arb_timer.isActive():
+            self._arb_timer.start(500)
+
 
     @QtCore.Slot()
     def on_set_duration(self):
@@ -3490,6 +3497,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.min_duration = int(self.duration_input.text())
         except ValueError:
             self.min_duration = 60
+            self._start_arb_timer()
+
 
     @QtCore.Slot()
     def on_set_max_duration(self):
@@ -3499,6 +3508,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except ValueError:
             self.max_duration = 60
             self.max_duration_input.setText(str(self.max_duration))
+            self._start_arb_timer()
 
     @QtCore.Slot()
     def on_set_ask_fee(self):
@@ -3509,6 +3519,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ask_fee_rate = 0.0
             self.ask_fee_input.setText(str(self.ask_fee_rate))
         globals()['FEE_RATE_BUY'] = self.ask_fee_rate
+        self._start_arb_timer()
 
     @QtCore.Slot()
     def on_set_bid_fee(self):
@@ -3519,6 +3530,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bid_fee_rate = 0.0
             self.bid_fee_input.setText(str(self.bid_fee_rate))
         globals()['FEE_RATE_SELL'] = self.bid_fee_rate
+        self._start_arb_timer()
 
     def on_clear_closed(self):
         
@@ -3615,6 +3627,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.max_duration_input.setEnabled(False)
             self.btn_set_max_duration.setEnabled(False)
 
+        self._start_arb_timer()
+
     def on_arbitrage_calculate(self):
         # 1) Eşikleri çek
         try:
@@ -3637,7 +3651,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # 4) Kapanmış-arbitraj tablosunun filtresini de tazeleyelim
         self.closed_proxy.invalidateFilter()
 
-
+        # Arbitrage hesaplamalarını başlat
+        self._start_arb_timer()
 
 
     # ─── WebSocket’ten gelen verileri önce dict’e koyan metod ───
