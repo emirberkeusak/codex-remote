@@ -22,6 +22,13 @@ from PySide6.QtWidgets import QGraphicsSimpleTextItem
 from PySide6.QtCore import Qt
 import qasync
 
+RE_SWAP_SUFFIX = re.compile(r"-SWAP$")
+RE_PERP_SUFFIX = re.compile(r"(-PERP|PERP)$")
+RE_AFTER_USDT = re.compile(r"(?<=USDT)_.*$")
+RE_LEADING_DIGITS = re.compile(r"^\d+")
+RE_TRAILING_DIGITS = re.compile(r"\d+$")
+RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")
+
 
 def resource_path(relative_path):
     """EXE içinden splash.png yolunu çözer"""
@@ -234,8 +241,8 @@ async def fetch_db_sell_exchs() -> list[str]:
 # --- Helper: normalize for subscription endpoints ---
 def normalize_pair(pair: str) -> str:
     s = pair.upper()
-    s = re.sub(r'-SWAP$', '', s)
-    s = re.sub(r'(-PERP|PERP)$', '', s)
+    s = RE_SWAP_SUFFIX.sub("", s)
+    s = RE_PERP_SUFFIX.sub("", s)
     return s.replace('-', '')
 
 
@@ -243,21 +250,22 @@ def normalize_pair(pair: str) -> str:
 def normalize_symbol(sym: str) -> str | None:
     s = sym.upper()
     # strip swap/perp suffixes
-    s = re.sub(r'(-SWAP|SWAP|-PERP|PERP)$', '', s)
+    s = RE_SWAP_SUFFIX.sub("", s)
+    s = RE_PERP_SUFFIX.sub("", s)
     # remove hyphens
     s = s.replace('-', '')
     # strip suffixes after USDT (e.g. "BTCUSDT_UMCBL" -> "BTCUSDT")
-    s = re.sub(r'(?<=USDT)_.*$', '', s)
+    s = RE_AFTER_USDT.sub("", s)
     # must end with USDT
     if not s.endswith("USDT"):
         return None
     # strip leading digits
-    s = re.sub(r'^\d+', '', s)
+    s = RE_LEADING_DIGITS.sub("", s)
     # drop if still ends in digits
-    if re.search(r'\d+$', s):
+    if RE_TRAILING_DIGITS.search(s):
         return None
     # keep only alphanumeric
-    s = re.sub(r'[^A-Z0-9]', '', s)
+    s = RE_NON_ALNUM.sub("", s)
     return s or None
 
 
