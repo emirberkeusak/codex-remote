@@ -551,10 +551,11 @@ class SymbolFilterProxyModel(QtCore.QSortFilterProxyModel):
             return True
         
         source_model = self.sourceModel()
-        if not source_model or source_row >= len(source_model._symbols):
+        if not source_model or source_row >= len(source_model._rows):
             return False
         
-        symbol = source_model._symbols[source_row]
+        row = source_model._rows[source_row]
+        symbol = row[0] if row else ""
         return symbol in self._filter_symbols
     
 
@@ -1187,7 +1188,10 @@ class FundingRateDiffModel(QtCore.QAbstractTableModel):
                 self._row_map[pair] = idx
                 self.endInsertRows()
 
-        new_symbols = [r[0] for r in self._rows]
+        # Derive unique symbols for the dropdown. Rows may contain the same
+        # symbol multiple times for different exchanges, therefore build a
+        # set and sort it for stable ordering.
+        new_symbols = sorted({r[0] for r in self._rows})
         if new_symbols != self._symbols:
             self._symbols = new_symbols
             self.symbolsUpdated.emit(self._symbols.copy())
