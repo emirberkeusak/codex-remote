@@ -326,7 +326,11 @@ class FlashDelegate(QtWidgets.QStyledItemDelegate):
     def _on_timeout(self):
         view = self.parent()
         if view and self._flash_cells:
-            view.viewport().update()
+            model = view.model()
+            for row, col in list(self._flash_cells):
+                idx = model.index(row, col)
+                rect = view.visualRect(idx)
+                view.viewport().update(rect)
         elif not self._flash_cells and self._timer.isActive():
             self._timer.stop()
 
