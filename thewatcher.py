@@ -283,6 +283,7 @@ def normalize_symbol(sym: str) -> str | None:
         s = s[:-1]
     # must end with USDT
     if not s.endswith("USDT"):
+        print(f"[NORMALIZE] input={sym} → normalized={s}")
         return None
     # strip leading digits
     s = RE_LEADING_DIGITS.sub("", s)
@@ -4871,9 +4872,23 @@ async def _kucoin_ws_info():
     async with aiohttp.ClientSession() as s:
         r = await s.post(KUCOIN_WS_TOKEN)
         j = await r.json()
+
     data = j.get("data", {})
     server = (data.get("instanceServers") or [{}])[0]
-    url = server.get("endpoint", "") + "?token=" + data.get("token", "")
+    # Kucoin requires a unique connectId parameter when establishing
+    # WebSocket connections. Without it the server will drop the
+    # connection right after it is opened.  Use the current timestamp
+    # as a simple unique identifier.
+    connect_id = str(int(time.time() * 1000))
+
+    url = (
+        server.get("endpoint", "")
+        + "?token="
+        + data.get("token", "")
+        + "&connectId="
+        + connect_id
+    )
+
     interval = server.get("pingInterval", 20000) / 1000
     return url, interval
 
@@ -4915,6 +4930,7 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
                         if m.get("type") != "message":
                             continue
                         if str(m.get("topic", "")).startswith("/contractMarket/funding_rate:"):
+                            print(f"[Kucoin WS] funding data: symbol={d.get('symbol')} rate={d.get('fundingRate')} nextTime={d.get('nextFundingTime')}")
                             d = m.get("data", {})
                             sym = d.get("symbol") or d.get("symbolName")
                             rate = d.get("fundingRate")
