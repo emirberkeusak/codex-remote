@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QHeaderView
 from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QValueAxis)
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 import qasync
 
 RE_SWAP_SUFFIX = re.compile(r"-SWAP$")
@@ -1874,6 +1875,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dark_mode = True   # Uygulama açıldığında önce dark mod aktif olsun
         super().__init__()
         self.setWindowTitle("Funding & Order Book Dashboard")
+        self.setWindowIcon(QIcon(resource_path("The_Watcher.ico")))  # veya watcher.ico
         self.resize(900, 600)
 
         self._arb_map = {}
@@ -4988,6 +4990,7 @@ async def publish_gateio_orderbook(symbols: list[str], cb, status_cb):
 # --- Application entrypoint ---
 def main():
     app = QtWidgets.QApplication(sys.argv)
+    app.setWindowIcon(QIcon(resource_path("The_Watcher.ico")))
 
     # 🔐 Lisans kontrolü
     ok, msg = run_license_check()
