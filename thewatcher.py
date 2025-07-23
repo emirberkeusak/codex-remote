@@ -550,12 +550,12 @@ class SymbolFilterProxyModel(QtCore.QSortFilterProxyModel):
         if not self._filter_symbols:
             return True
         
-        source_model = self.sourceModel()
-        if not source_model or source_row >= len(source_model._rows):
+        src = self.sourceModel()
+        if not src or source_row >= src.rowCount():
             return False
         
-        row = source_model._rows[source_row]
-        symbol = row[0] if row else ""
+        idx = src.index(source_row, 0, source_parent)
+        symbol = src.data(idx, QtCore.Qt.DisplayRole)
         return symbol in self._filter_symbols
     
 
