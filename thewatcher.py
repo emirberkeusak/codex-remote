@@ -85,6 +85,9 @@ GATEIO_WS_URL          = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 GATEIO_REST_TICKERS    = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
 KUCOIN_REST_CONTRACTS  = "https://api-futures.kucoin.com/api/v1/contracts/active"
 KUCOIN_WS_TOKEN        = "https://api-futures.kucoin.com/api/v1/bullet-public"
+KUCOIN_REST_FUNDING_CURRENT = (
+    "https://api-futures.kucoin.com/api/v1/funding-rate/{symbol}/current"
+)
 
 
 BYBIT_BATCH_SIZE     = 50
@@ -818,6 +821,40 @@ async def fetch_kucoin_swaps() -> list[str]:
         for e in j.get("data", [])
         if isinstance(e.get("symbol"), str) and e["symbol"].upper().endswith("USDTM")
     ]
+
+async def get_all_kucoin_funding_rates_fast() -> list[tuple[str, float, float | None]]:
+    """Fetch current funding rates for all Kucoin contracts quickly."""
+    syms = await fetch_kucoin_swaps()
+
+    async def _fetch(sess: aiohttp.ClientSession, sym: str):
+        try:
+            r = await sess.get(KUCOIN_REST_FUNDING_CURRENT.format(symbol=sym))
+            j = await r.json()
+            d = j.get("data", {})
+            rate = d.get("fundingRate")
+            ts = d.get("nextFundingTime")
+            return sym, rate, ts
+        except Exception:
+            return sym, None, None
+
+    async with aiohttp.ClientSession() as sess:
+        results = await asyncio.gather(*[_fetch(sess, s) for s in syms])
+
+    out: list[tuple[str, float, float | None]] = []
+    for sym, rate, ts in results:
+        if rate is None:
+            continue
+        next_ts: float | None = None
+        if ts is not None:
+            try:
+                next_ts = int(ts) / 1000
+            except (TypeError, ValueError):
+                next_ts = None
+        else:
+            next_ts = next_kucoin_funding_ts()
+        out.append((sym, float(rate) * 100, next_ts))
+
+    return out
 
 def next_kucoin_funding_ts(now: float | None = None) -> float:
     """Return the next Kucoin funding timestamp (UTC)."""
@@ -4901,11 +4938,14 @@ async def _kucoin_ping_loop(ws, interval: float):
         pass
 
 async def publish_kucoin(cb, status_cb, index_cb=None):
-    syms = await fetch_kucoin_swaps()
-    topics = [f"/contractMarket/funding_rate:{s}" for s in syms]
     subs = [
-        {"id": i, "type": "subscribe", "topic": t, "privateChannel": False, "response": True}
-        for i, t in enumerate(topics)
+        {
+            "id": 0,
+            "type": "subscribe",
+            "topic": "/contract/announcement",
+            "privateChannel": False,
+            "response": True,
+        }
     ]
     while True:
         url, interval = await _kucoin_ws_info()
@@ -4929,7 +4969,9 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
                             continue
                         if m.get("type") != "message":
                             continue
-                        if str(m.get("topic", "")).startswith("/contractMarket/funding_rate:"):
+                        if str(m.get("topic", "")) == "/contract/announcement":
+                            if m.get("subject") not in ("funding.begin", "funding.end"):
+                                continue
                             d = m.get("data", {})
                             sym = d.get("symbol") or d.get("symbolName")
                             rate = d.get("fundingRate")
@@ -4941,8 +4983,6 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
                                         ts = int(next_ts) / 1000
                                     except (TypeError, ValueError):
                                         ts = None
-                                else:
-                                    ts = next_kucoin_funding_ts()
                                 cb("Kucoin", sym, float(rate) * 100, ts)
                 finally:
                     ping_task.cancel()
@@ -4958,7 +4998,7 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
 
 async def publish_kucoin_askbid(cb, status_cb):
     syms = await fetch_kucoin_swaps()
-    topics = [f"/contractMarket/ticker:{s}" for s in syms]
+    topics = [f"/contractMarket/tickerV2:{s}" for s in syms]
     subs = [
         {"id": i, "type": "subscribe", "topic": t, "privateChannel": False, "response": True}
         for i, t in enumerate(topics)
@@ -4985,8 +5025,10 @@ async def publish_kucoin_askbid(cb, status_cb):
                             continue
                         if m.get("type") != "message":
                             continue
-                        if str(m.get("topic", "")).startswith("/contractMarket/ticker:"):
+                        if str(m.get("topic", "")).startswith("/contractMarket/tickerV2:"):
                             d = m.get("data", {})
+                            if isinstance(d.get("data"), dict):
+                                d = d["data"]
                             sym = d.get("symbol")
                             bid = d.get("bestBidPrice")
                             ask = d.get("bestAskPrice")
@@ -5309,6 +5351,19 @@ def main():
     def show_main():
         window = MainWindow()
         window.showMaximized()
+
+        async def _init_kucoin_rates():
+            try:
+                rates = await get_all_kucoin_funding_rates_fast()
+                for sym, rate, ts in rates:
+                    window.model.update_rate("Kucoin", sym, rate, ts)
+                    norm = normalize_symbol(sym)
+                    if norm:
+                        window.current_funding[("Kucoin", norm)] = rate
+            except Exception as exc:
+                print(f"[Kucoin] Initial funding fetch failed: {exc}")
+
+        loop.create_task(_init_kucoin_rates())
 
         # → Funding-rate geldiğinde hem modele hem current_funding’e yazacak callback
         def fr_cb(exchange: str, raw_symbol: str, rate_pct: float, next_ts=None):
