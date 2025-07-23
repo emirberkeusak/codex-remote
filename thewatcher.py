@@ -283,6 +283,7 @@ def normalize_symbol(sym: str) -> str | None:
         s = s[:-1]
     # must end with USDT
     if not s.endswith("USDT"):
+
         return None
     # strip leading digits
     s = RE_LEADING_DIGITS.sub("", s)
