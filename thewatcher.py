@@ -286,8 +286,8 @@ def normalize_symbol(sym: str) -> str | None:
     # strip leading digits
     s = RE_LEADING_DIGITS.sub("", s)
     # drop if still ends in digits
-    if RE_TRAILING_DIGITS.search(s):
-        return None
+   # if RE_TRAILING_DIGITS.search(s):
+    #    return None
     # keep only alphanumeric
     s = RE_NON_ALNUM.sub("", s)
     return s or None
@@ -4903,6 +4903,9 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
                 try:
                     async for raw in ws:
                         m = json.loads(raw)
+                        if m.get("type") == "ping":
+                            await ws.send(json.dumps({"id": m.get("id"), "type": "pong"}))
+                            continue
                         if m.get("type") != "message":
                             continue
                         if str(m.get("topic", "")).startswith("/contractMarket/funding_rate:"):
@@ -4951,6 +4954,9 @@ async def publish_kucoin_askbid(cb, status_cb):
                 try:
                     async for raw in ws:
                         m = json.loads(raw)
+                        if m.get("type") == "ping":
+                            await ws.send(json.dumps({"id": m.get("id"), "type": "pong"}))
+                            continue
                         if m.get("type") != "message":
                             continue
                         if str(m.get("topic", "")).startswith("/contractMarket/ticker:"):
@@ -4999,6 +5005,9 @@ async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
                 try:
                     async for raw in ws:
                         m = json.loads(raw)
+                        if m.get("type") == "ping":
+                            await ws.send(json.dumps({"id": m.get("id"), "type": "pong"}))
+                            continue
                         if m.get("type") != "message":
                             continue
                         if str(m.get("topic", "")).startswith("/contractMarket/level2Depth5:"):
