@@ -38,9 +38,9 @@ def resource_path(relative_path):
     return os.path.join(os.path.abspath("."), relative_path)
 
 # --- Constants & Endpoints ---
-EXCHANGES = ["Binance", "OKX", "Bybit", "Bitget", "Gateio"]
+EXCHANGES = ["Binance", "OKX", "Bybit", "Bitget", "Gateio", "Kucoin"]
 # Sadece Binance için Ask/Bid kolonları
-AB_EXCHANGES = ["Binance", "OKX", "Bybit", "Bitget", "Gateio"]
+AB_EXCHANGES = ["Binance", "OKX", "Bybit", "Bitget", "Gateio", "Kucoin"]
 
 # Funding tablosu kolon başlıkları
 FUNDING_COLUMNS = [
@@ -55,6 +55,8 @@ FUNDING_COLUMNS = [
     "Bitget Countdown",
     "Gateio",
     "Gateio Countdown",
+    "Kucoin",
+    "Kucoin Countdown",
 ]
 
 # Funding Rate Diff tablosu kolon başlıkları
@@ -80,6 +82,8 @@ BITGET_WS_URL          = "wss://ws.bitget.com/v2/ws/public"
 BITGET_REST_CONTRACTS  = "https://api.bitget.com/api/v2/mix/market/contracts"
 GATEIO_WS_URL          = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 GATEIO_REST_TICKERS    = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
+KUCOIN_REST_CONTRACTS  = "https://api-futures.kucoin.com/api/v1/contracts/active"
+KUCOIN_WS_TOKEN        = "https://api-futures.kucoin.com/api/v1/bullet-public"
 
 
 BYBIT_BATCH_SIZE     = 50
@@ -273,6 +277,9 @@ def normalize_symbol(sym: str) -> str | None:
     s = s.replace('-', '')
     # strip suffixes after USDT (e.g. "BTCUSDT_UMCBL" -> "BTCUSDT")
     s = RE_AFTER_USDT.sub("", s)
+    # strip trailing "M" after USDT (e.g. "BTCUSDTM" -> "BTCUSDT")
+    if s.endswith("USDTM"):
+        s = s[:-1]
     # must end with USDT
     if not s.endswith("USDT"):
         return None
@@ -800,6 +807,23 @@ async def fetch_gateio_swaps() -> list[str]:
         if isinstance(e.get("contract"), str)
     ]
 
+async def fetch_kucoin_swaps() -> list[str]:
+    async with aiohttp.ClientSession() as s:
+        r = await s.get(KUCOIN_REST_CONTRACTS)
+        j = await r.json()
+    return [
+        e["symbol"]
+        for e in j.get("data", [])
+        if isinstance(e.get("symbol"), str) and e["symbol"].upper().endswith("USDTM")
+    ]
+
+def next_kucoin_funding_ts(now: float | None = None) -> float:
+    """Return the next Kucoin funding timestamp (UTC)."""
+    if now is None:
+        now = time.time()
+    interval = 8 * 3600
+    return ((int(now) // interval) + 1) * interval
+
 async def fetch_binance_futures() -> list[str]:
     async with aiohttp.ClientSession() as s:
         r = await s.get(BINANCE_REST_EXCHANGE_INFO)
@@ -938,7 +962,7 @@ class FundingTableModel(QtCore.QAbstractTableModel):
             self._mod_counter += 1
 
     def _update_countdowns(self):
-        for exch in ("Binance", "OKX", "Bybit", "Bitget", "Gateio"):
+        for exch in EXCHANGES:
             col_name = f"{exch} Countdown"
             if col_name not in FUNDING_COLUMNS:
                 continue
@@ -1900,6 +1924,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bitget_symbol_map: dict[str, str] = {}
         # Gateio normalized symbol -> raw symbol mapping
         self._gateio_symbol_map: dict[str, str] = {}
+        # Kucoin normalized symbol -> raw symbol mapping
+        self._kucoin_symbol_map: dict[str, str] = {}
         # WebSocket tasks started for live feeds
         self._ws_tasks: list[asyncio.Task] = []
         self._really_closing = False
@@ -2201,6 +2227,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ws_tasks.append(loop.create_task(publish_bybit_askbid(self._enqueue_askbid, self._update_status_ab)))
         self._ws_tasks.append(loop.create_task(publish_bitget_askbid(self._enqueue_askbid, self._update_status_ab)))
         self._ws_tasks.append(loop.create_task(publish_gateio_askbid(self._enqueue_askbid, self._update_status_ab)))
+        self._ws_tasks.append(loop.create_task(publish_kucoin_askbid(self._enqueue_askbid, self._update_status_ab)))
         self._askbid_task_scheduled = True
 
     async def start_orderbook_feeds(self):
@@ -2265,6 +2292,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 publish_gateio_orderbook(
                     gateio_syms,
                     lambda s, b, a: self._enqueue_orderbook("Gateio", s, b, a),
+                    lambda *_: None,
+                )
+            )
+        )
+
+        kucoin_syms = await fetch_kucoin_swaps()
+        self._ws_tasks.append(
+            loop.create_task(
+                publish_kucoin_orderbook(
+                    kucoin_syms,
+                    lambda s, b, a: self._enqueue_orderbook("Kucoin", s, b, a),
                     lambda *_: None,
                 )
             )
@@ -2780,6 +2818,15 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self.gateio_orderbook_dropdown)
         self.btn_generate_gateio_orderbook = QtWidgets.QPushButton("Generate")
         row.addWidget(self.btn_generate_gateio_orderbook)
+
+        row.addSpacing(20)
+
+        # Kucoin filter row
+        row.addWidget(QtWidgets.QLabel("Kucoin Symbols:"))
+        self.kucoin_orderbook_dropdown = MultiSelectDropdown()
+        row.addWidget(self.kucoin_orderbook_dropdown)
+        self.btn_generate_kucoin_orderbook = QtWidgets.QPushButton("Generate")
+        row.addWidget(self.btn_generate_kucoin_orderbook)
         row.addStretch()
 
         layout.addLayout(row)
@@ -2822,6 +2869,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_generate_gateio_orderbook.clicked.connect(
             self._on_generate_gateio_orderbook
         )
+        self.btn_generate_kucoin_orderbook.clicked.connect(
+            self._on_generate_kucoin_orderbook
+        )
         self.btn_generate_cross_orderbook.clicked.connect(
             self._on_generate_cross_orderbook
         )
@@ -2856,6 +2906,7 @@ class MainWindow(QtWidgets.QMainWindow):
         loop.create_task(self._refresh_bybit_symbols())
         loop.create_task(self._refresh_bitget_symbols())
         loop.create_task(self._refresh_gateio_symbols())
+        loop.create_task(self._refresh_kucoin_symbols())
 
         # Yeni grafik sekmesi
     def open_chart_tab(self):
@@ -3120,6 +3171,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 norm_syms.append(norm)
         self.gateio_orderbook_dropdown.set_items(norm_syms)
 
+    async def _refresh_kucoin_symbols(self):
+        if not hasattr(self, "kucoin_orderbook_dropdown"):
+            return
+        syms = await fetch_kucoin_swaps()
+        self._kucoin_symbol_map.clear()
+        norm_syms = []
+        for s in syms:
+            norm = normalize_symbol(s)
+            if norm:
+                self._kucoin_symbol_map[norm] = s
+                norm_syms.append(norm)
+        self.kucoin_orderbook_dropdown.set_items(norm_syms)
+
     def _get_raw_symbol(self, exchange: str, norm: str) -> str | None:
         if exchange == "Binance":
             return norm
@@ -3131,6 +3195,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return self._bitget_symbol_map.get(norm, norm)
         if exchange == "Gateio":
             return self._gateio_symbol_map.get(norm, norm)
+        if exchange == "Kucoin":
+            return self._kucoin_symbol_map.get(norm, norm)
         return norm
 
     def _start_orderbook_feed(self, loop, exchange: str, symbol: str, cb, status_cb=None):
@@ -3157,6 +3223,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if exchange == "Gateio":
             return loop.create_task(
                 publish_gateio_orderbook([symbol], lambda _s, b, a: cb(b, a), status_cb)
+            )
+        if exchange == "Kucoin":
+            return loop.create_task(
+                publish_kucoin_orderbook([symbol], lambda _s, b, a: cb(b, a), status_cb)
             )
         return None
 
@@ -3239,6 +3309,32 @@ class MainWindow(QtWidgets.QMainWindow):
             self.orderbook_windows.append(win)
             task = loop.create_task(
                 publish_bitget_orderbook(
+                    [raw],
+                    lambda _s, b, a, w=win: w.update_book(b, a),
+                    lambda _e, connected, w=win: w.update_status(connected),
+                )
+            )
+
+            def _cleanup(_=None, w=win, t=task):
+                if w in self.orderbook_windows:
+                    self.orderbook_windows.remove(w)
+                t.cancel()
+
+            win.destroyed.connect(_cleanup)
+            win.show()
+
+    @QtCore.Slot()
+    def _on_generate_kucoin_orderbook(self):
+        if not hasattr(self, "kucoin_orderbook_dropdown"):
+            return
+        syms = self.kucoin_orderbook_dropdown.get_selected_items()
+        loop = asyncio.get_event_loop()
+        for norm in syms:
+            raw = self._kucoin_symbol_map.get(norm, norm)
+            win = OrderbookWindow(norm, "Kucoin", self.dark_mode)
+            self.orderbook_windows.append(win)
+            task = loop.create_task(
+                publish_kucoin_orderbook(
                     [raw],
                     lambda _s, b, a, w=win: w.update_book(b, a),
                     lambda _e, connected, w=win: w.update_status(connected),
@@ -4770,6 +4866,164 @@ async def publish_gateio_askbid(cb, status_cb):
             print(f"[Gateio AskBid] Error: {e}, reconnecting in 5s")
             await _safe_sleep(5)
 
+async def _kucoin_ws_info():
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(KUCOIN_WS_TOKEN)
+        j = await r.json()
+    data = j.get("data", {})
+    server = (data.get("instanceServers") or [{}])[0]
+    url = server.get("endpoint", "") + "?token=" + data.get("token", "")
+    interval = server.get("pingInterval", 20000) / 1000
+    return url, interval
+
+async def _kucoin_ping_loop(ws, interval: float):
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            await ws.send(json.dumps({"id": int(time.time() * 1000), "type": "ping"}))
+    except asyncio.CancelledError:
+        pass
+
+async def publish_kucoin(cb, status_cb, index_cb=None):
+    syms = await fetch_kucoin_swaps()
+    topics = [f"/contractMarket/funding_rate:{s}" for s in syms]
+    subs = [
+        {"id": i, "type": "subscribe", "topic": t, "response": True}
+        for i, t in enumerate(topics)
+    ]
+    while True:
+        url, interval = await _kucoin_ws_info()
+        try:
+            async with websockets.connect(url, ping_interval=None) as ws:
+                status_cb("Kucoin", True)
+                print("[Kucoin] Connected")
+                for sub in subs:
+                    await ws.send(json.dumps(sub))
+                ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
+                try:
+                    async for raw in ws:
+                        m = json.loads(raw)
+                        if m.get("type") != "message":
+                            continue
+                        if str(m.get("topic", "")).startswith("/contractMarket/funding_rate:"):
+                            d = m.get("data", {})
+                            sym = d.get("symbol") or d.get("symbolName")
+                            rate = d.get("fundingRate")
+                            next_ts = d.get("nextFundingTime")
+                            if sym and rate is not None:
+                                ts = None
+                                if next_ts is not None:
+                                    try:
+                                        ts = int(next_ts) / 1000
+                                    except (TypeError, ValueError):
+                                        ts = None
+                                else:
+                                    ts = next_kucoin_funding_ts()
+                                cb("Kucoin", sym, float(rate) * 100, ts)
+                finally:
+                    ping_task.cancel()
+                    await asyncio.gather(ping_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            if not _loop_running():
+                break
+            status_cb("Kucoin", False)
+            print(f"[Kucoin] Error: {e}, reconnecting in 5s")
+            await _safe_sleep(5)
+
+async def publish_kucoin_askbid(cb, status_cb):
+    syms = await fetch_kucoin_swaps()
+    topics = [f"/contractMarket/ticker:{s}" for s in syms]
+    subs = [
+        {"id": i, "type": "subscribe", "topic": t, "response": True}
+        for i, t in enumerate(topics)
+    ]
+    while True:
+        url, interval = await _kucoin_ws_info()
+        try:
+            async with websockets.connect(url, ping_interval=None) as ws:
+                status_cb("Kucoin", True)
+                print("[Kucoin AskBid] Connected")
+                for sub in subs:
+                    await ws.send(json.dumps(sub))
+                ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
+                try:
+                    async for raw in ws:
+                        m = json.loads(raw)
+                        if m.get("type") != "message":
+                            continue
+                        if str(m.get("topic", "")).startswith("/contractMarket/ticker:"):
+                            d = m.get("data", {})
+                            sym = d.get("symbol")
+                            bid = d.get("bestBidPrice")
+                            ask = d.get("bestAskPrice")
+                            bid_sz = d.get("bestBidSize")
+                            ask_sz = d.get("bestAskSize")
+                            if sym and bid is not None and ask is not None:
+                                cb(
+                                    "Kucoin",
+                                    sym,
+                                    float(bid),
+                                    float(ask),
+                                    float(bid_sz) if bid_sz is not None else None,
+                                    float(ask_sz) if ask_sz is not None else None,
+                                )
+                finally:
+                    ping_task.cancel()
+                    await asyncio.gather(ping_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            if not _loop_running():
+                break
+            status_cb("Kucoin", False)
+            print(f"[Kucoin AskBid] Error: {e}, reconnecting in 5s")
+            await _safe_sleep(5)
+
+async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
+    topics = [f"/contractMarket/level2Depth5:{s}" for s in symbols]
+    subs = [
+        {"id": i, "type": "subscribe", "topic": t, "response": True}
+        for i, t in enumerate(topics)
+    ]
+    while True:
+        url, interval = await _kucoin_ws_info()
+        try:
+            async with websockets.connect(url, ping_interval=None) as ws:
+                status_cb("Kucoin", True)
+                print("[Kucoin Orderbook] Connected")
+                for sub in subs:
+                    await ws.send(json.dumps(sub))
+                ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
+                try:
+                    async for raw in ws:
+                        m = json.loads(raw)
+                        if m.get("type") != "message":
+                            continue
+                        if str(m.get("topic", "")).startswith("/contractMarket/level2Depth5:"):
+                            data = m.get("data", {})
+                            sym = data.get("symbol")
+                            bids = [
+                                (float(p), float(q)) for p, q, *_ in data.get("bids", [])[:3]
+                            ]
+                            asks = [
+                                (float(p), float(q)) for p, q, *_ in data.get("asks", [])[:3]
+                            ]
+                            if sym:
+                                cb(sym, bids, asks)
+                finally:
+                    ping_task.cancel()
+                    await asyncio.gather(ping_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            if not _loop_running():
+                break
+            status_cb("Kucoin", False)
+            print(f"[Kucoin Orderbook] Error: {e}, reconnecting in 5s")
+            await _safe_sleep(5)
+
 async def publish_binance_orderbook(symbols: list[str], cb, status_cb):
     streams = '/'.join(f"{s.lower()}@depth5@100ms" for s in symbols)
     url = f"wss://fstream.binance.com/stream?streams={streams}"
@@ -5058,6 +5312,7 @@ def main():
         window._ws_tasks.append(loop.create_task(publish_bybit   (fr_cb, window._update_status_fr, window.update_index_price)))
         window._ws_tasks.append(loop.create_task(publish_bitget  (fr_cb, window._update_status_fr, window.update_index_price)))
         window._ws_tasks.append(loop.create_task(publish_gateio  (fr_cb, window._update_status_fr, window.update_index_price)))
+        window._ws_tasks.append(loop.create_task(publish_kucoin  (fr_cb, window._update_status_fr, window.update_index_price)))
 
         # Start ask/bid feeds immediately but keep the tab closed
         window.start_askbid_feeds()
