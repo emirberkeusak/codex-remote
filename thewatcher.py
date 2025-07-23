@@ -283,7 +283,6 @@ def normalize_symbol(sym: str) -> str | None:
         s = s[:-1]
     # must end with USDT
     if not s.endswith("USDT"):
-        print(f"[NORMALIZE] input={sym} → normalized={s}")
         return None
     # strip leading digits
     s = RE_LEADING_DIGITS.sub("", s)
@@ -4930,7 +4929,6 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
                         if m.get("type") != "message":
                             continue
                         if str(m.get("topic", "")).startswith("/contractMarket/funding_rate:"):
-                            print(f"[Kucoin WS] funding data: symbol={d.get('symbol')} rate={d.get('fundingRate')} nextTime={d.get('nextFundingTime')}")
                             d = m.get("data", {})
                             sym = d.get("symbol") or d.get("symbolName")
                             rate = d.get("fundingRate")
