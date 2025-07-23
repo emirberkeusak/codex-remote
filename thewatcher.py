@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+import gzip
 from datetime import datetime
 import pandas as pd
 
@@ -4888,7 +4889,7 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
     syms = await fetch_kucoin_swaps()
     topics = [f"/contractMarket/funding_rate:{s}" for s in syms]
     subs = [
-        {"id": i, "type": "subscribe", "topic": t, "response": True}
+        {"id": i, "type": "subscribe", "topic": t, "privateChannel": False, "response": True}
         for i, t in enumerate(topics)
     ]
     while True:
@@ -4902,6 +4903,11 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
                 ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
                 try:
                     async for raw in ws:
+                        if isinstance(raw, (bytes, bytearray)):
+                            try:
+                                raw = gzip.decompress(raw).decode()
+                            except Exception:
+                                continue
                         m = json.loads(raw)
                         if m.get("type") == "ping":
                             await ws.send(json.dumps({"id": m.get("id"), "type": "pong"}))
@@ -4939,7 +4945,7 @@ async def publish_kucoin_askbid(cb, status_cb):
     syms = await fetch_kucoin_swaps()
     topics = [f"/contractMarket/ticker:{s}" for s in syms]
     subs = [
-        {"id": i, "type": "subscribe", "topic": t, "response": True}
+        {"id": i, "type": "subscribe", "topic": t, "privateChannel": False, "response": True}
         for i, t in enumerate(topics)
     ]
     while True:
@@ -4953,6 +4959,11 @@ async def publish_kucoin_askbid(cb, status_cb):
                 ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
                 try:
                     async for raw in ws:
+                        if isinstance(raw, (bytes, bytearray)):
+                            try:
+                                raw = gzip.decompress(raw).decode()
+                            except Exception:
+                                continue
                         m = json.loads(raw)
                         if m.get("type") == "ping":
                             await ws.send(json.dumps({"id": m.get("id"), "type": "pong"}))
@@ -4990,7 +5001,7 @@ async def publish_kucoin_askbid(cb, status_cb):
 async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
     topics = [f"/contractMarket/level2Depth5:{s}" for s in symbols]
     subs = [
-        {"id": i, "type": "subscribe", "topic": t, "response": True}
+        {"id": i, "type": "subscribe", "topic": t, "privateChannel": False, "response": True}
         for i, t in enumerate(topics)
     ]
     while True:
@@ -5004,6 +5015,11 @@ async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
                 ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
                 try:
                     async for raw in ws:
+                        if isinstance(raw, (bytes, bytearray)):
+                            try:
+                                raw = gzip.decompress(raw).decode()
+                            except Exception:
+                                continue
                         m = json.loads(raw)
                         if m.get("type") == "ping":
                             await ws.send(json.dumps({"id": m.get("id"), "type": "pong"}))
