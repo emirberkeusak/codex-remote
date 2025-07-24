@@ -1042,6 +1042,7 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         self._row_map: dict[str, int] = {}
 
     def rowCount(self, parent=QtCore.QModelIndex()):
+        print(f"[ROWCOUNT DEBUG] AskBid symbols: {len(self._symbols)}")
         return len(self._symbols)
 
     def columnCount(self, parent=QtCore.QModelIndex()):
@@ -1068,9 +1069,15 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         if entry:
             bid, ask = entry[0], entry[1]
         else:
+            print(f"[MISSING ENTRY] sym={sym}, exch={exch}")
             bid = ask = ""
         val = ask if c%2 == 1 else bid
-        return f"{val:.8f}" if isinstance(val, float) else val
+        print(f"[DEBUG] GUI cell sym={sym}, exch={exch}, val={val} ({type(val)})")
+        try:
+            return f"{float(val):.8f}"
+        except Exception:
+            print(f"[DATA ERROR] sym={sym}, exch={exch}, val={val}")
+            return str(val)
 
     @QtCore.Slot(str, str, float, float, object, object)
     def update_askbid(
@@ -1091,6 +1098,10 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
             )
         sym = normalize_symbol(raw_symbol)
         if sym is None:
+            print(f"[GUI ERROR] Normalize failed: {raw_symbol}")
+            kucoin_logger.error("[GUI] Normalize failed: raw_symbol=%s", raw_symbol)
+            return
+        if sym is None:
             if exchange == "Kucoin":
                 print(f"[KUCOIN ERROR] Normalize edilemedi: {raw_symbol}")
                 kucoin_logger.error("Normalize failed for %s", raw_symbol)
@@ -1099,6 +1110,8 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
             if exchange == "Kucoin":
                 print(f"[KUCOIN GUI] Yeni sembol: {sym} (raw: {raw_symbol})")
                 kucoin_logger.debug("New symbol %s from raw %s", sym, raw_symbol)
+                print(f"[GUI] Yeni sembol: {sym} - raw: {raw_symbol}")
+                kucoin_logger.debug("[GUI] Yeni sembol %s - raw: %s", sym, raw_symbol)
         
         modified = False
         # 2) Yeni sembol ekle
