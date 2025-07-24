@@ -5154,7 +5154,7 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
 
 async def publish_kucoin_askbid(cb, status_cb):
     syms = await fetch_kucoin_swaps()
-    topics = [f"/contractMarket/tickerV2:{s}" for s in syms]
+    topics = [f"/contractMarket/level2Depth5:{s}" for s in syms]
     subs = [
         {"id": i, "type": "subscribe", "topic": t, "privateChannel": False, "response": True}
         for i, t in enumerate(topics)
@@ -5190,31 +5190,42 @@ async def publish_kucoin_askbid(cb, status_cb):
                             continue
                         if m.get("type") != "message":
                             continue
-                        if str(m.get("topic", "")).startswith("/contractMarket/tickerV2:"):
-                            d = m.get("data", {})
-                            if isinstance(d.get("data"), dict):
-                                d = d["data"]
-                            sym = d.get("symbol")
-                            bid = d.get("bestBidPrice")
-                            ask = d.get("bestAskPrice")
-                            bid_sz = d.get("bestBidSize")
-                            ask_sz = d.get("bestAskSize")
-                            if sym and bid is not None and ask is not None:
+                        if str(m.get("topic", "")).startswith("/contractMarket/level2Depth5:"):
+                            data = m.get("data", {})
+                            sym = data.get("symbol")
+                            bids = data.get("bids") or []
+                            asks = data.get("asks") or []
+
+                            bid_price = bid_size = ask_price = ask_size = None
+                            if bids:
+                                try:
+                                    bid_price = float(bids[0][0])
+                                    bid_size = float(bids[0][1])
+                                except (TypeError, ValueError, IndexError):
+                                    pass
+                            if asks:
+                                try:
+                                    ask_price = float(asks[0][0])
+                                    ask_size = float(asks[0][1])
+                                except (TypeError, ValueError, IndexError):
+                                    pass
+
+                            if sym and bid_price is not None and ask_price is not None:
                                 kucoin_logger.debug(
                                     "Parsed askbid sym=%s bid=%s ask=%s bid_sz=%s ask_sz=%s",
                                     sym,
-                                    bid,
-                                    ask,
-                                    bid_sz,
-                                    ask_sz,
+                                    bid_price,
+                                    ask_price,
+                                    bid_size,
+                                    ask_size,
                                 )
                                 cb(
                                     "Kucoin",
                                     sym,
-                                    float(bid),
-                                    float(ask),
-                                    float(bid_sz) if bid_sz is not None else None,
-                                    float(ask_sz) if ask_sz is not None else None,
+                                    bid_price,
+                                    ask_price,
+                                    bid_size,
+                                    ask_size,
                                 )
                 finally:
                     ping_task.cancel()
