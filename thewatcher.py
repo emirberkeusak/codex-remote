@@ -286,6 +286,9 @@ def normalize_symbol(sym: str) -> str | None:
     # strip trailing "M" after USDT (e.g. "BTCUSDTM" -> "BTCUSDT")
     if s.endswith("USDTM"):
         s = s[:-1]
+    # map XBT prefix used by Kucoin to BTC
+    if s.startswith("XBT"):
+        s = "BTC" + s[3:]
     # must end with USDT
     if not s.endswith("USDT"):
 
