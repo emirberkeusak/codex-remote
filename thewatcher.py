@@ -5162,6 +5162,7 @@ async def publish_kucoin_askbid(cb, status_cb):
                 kucoin_logger.debug("AskBid connected")
                 for sub in subs:
                     await ws.send(json.dumps(sub))
+                    await asyncio.sleep(0.05)
                 ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
                 try:
                     async for raw in ws:
@@ -5237,6 +5238,7 @@ async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
                 kucoin_logger.debug("Orderbook connected")
                 for sub in subs:
                     await ws.send(json.dumps(sub))
+                    await asyncio.sleep(0.05)
                 ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
                 try:
                     async for raw in ws:
