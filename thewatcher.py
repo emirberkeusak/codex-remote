@@ -1076,8 +1076,12 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
             return
         sym = normalize_symbol(raw_symbol)
         if sym is None:
-            print(f"[{exchange}] Unrecognized symbol: {raw_symbol}", file=sys.stderr)
+            if exchange == "Kucoin":
+                print(f"[KUCOIN ERROR] Normalize edilemedi: {raw_symbol}")
             return
+        if sym not in self._data:
+            if exchange == "Kucoin":
+                print(f"[KUCOIN GUI] Yeni sembol: {sym} (raw: {raw_symbol})")
         
         modified = False
         # 2) Yeni sembol ekle
