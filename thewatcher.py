@@ -1066,13 +1066,14 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
             return sym
         exch = AB_EXCHANGES[(c-1)//2]
         entry = self._data.get(sym, {}).get(exch)
-        if entry:
-            bid, ask = entry[0], entry[1]
-        else:
+        if not entry:
             print(f"[MISSING ENTRY] sym={sym}, exch={exch}")
-            bid = ask = ""
-        val = ask if c%2 == 1 else bid
-        print(f"[DEBUG] GUI cell sym={sym}, exch={exch}, val={val} ({type(val)})")
+            return "0.00000000"
+        bid, ask = entry[0], entry[1]
+        val = ask if c % 2 == 1 else bid
+        print(
+            f"[DEBUG] GUI cell sym={sym}, exch={exch}, val={val} ({type(val)})"
+        )
         try:
             return f"{float(val):.8f}"
         except Exception:
@@ -1099,12 +1100,9 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         sym = normalize_symbol(raw_symbol)
         if sym is None:
             print(f"[GUI ERROR] Normalize failed: {raw_symbol}")
-            kucoin_logger.error("[GUI] Normalize failed: raw_symbol=%s", raw_symbol)
-            return
-        if sym is None:
             if exchange == "Kucoin":
-                print(f"[KUCOIN ERROR] Normalize edilemedi: {raw_symbol}")
                 kucoin_logger.error("Normalize failed for %s", raw_symbol)
+                kucoin_logger.error("[GUI] Normalize failed: raw_symbol=%s", raw_symbol)
             return
         if sym not in self._data:
             if exchange == "Kucoin":
