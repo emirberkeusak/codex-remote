@@ -93,6 +93,8 @@ KUCOIN_REST_FUNDING_CURRENT = (
 BYBIT_BATCH_SIZE     = 50
 BYBIT_OPEN_TIMEOUT   = 30
 BYBIT_CLOSE_TIMEOUT  = 10
+KUCOIN_OPEN_TIMEOUT  = 30
+KUCOIN_CLOSE_TIMEOUT = 1
 
 FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
@@ -4950,7 +4952,12 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
     while True:
         url, interval = await _kucoin_ws_info()
         try:
-            async with websockets.connect(url, ping_interval=None) as ws:
+            async with websockets.connect(
+                url,
+                ping_interval=None,
+                open_timeout=KUCOIN_OPEN_TIMEOUT,
+                close_timeout=KUCOIN_CLOSE_TIMEOUT,
+            ) as ws:
                 status_cb("Kucoin", True)
                 print("[Kucoin] Connected")
                 for sub in subs:
@@ -5006,7 +5013,12 @@ async def publish_kucoin_askbid(cb, status_cb):
     while True:
         url, interval = await _kucoin_ws_info()
         try:
-            async with websockets.connect(url, ping_interval=None) as ws:
+            async with websockets.connect(
+                url,
+                ping_interval=None,
+                open_timeout=KUCOIN_OPEN_TIMEOUT,
+                close_timeout=KUCOIN_CLOSE_TIMEOUT,
+            ) as ws:
                 status_cb("Kucoin", True)
                 print("[Kucoin AskBid] Connected")
                 for sub in subs:
@@ -5064,7 +5076,12 @@ async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
     while True:
         url, interval = await _kucoin_ws_info()
         try:
-            async with websockets.connect(url, ping_interval=None) as ws:
+            async with websockets.connect(
+                url,
+                ping_interval=None,
+                open_timeout=KUCOIN_OPEN_TIMEOUT,
+                close_timeout=KUCOIN_CLOSE_TIMEOUT,
+            ) as ws:
                 status_cb("Kucoin", True)
                 print("[Kucoin Orderbook] Connected")
                 for sub in subs:
