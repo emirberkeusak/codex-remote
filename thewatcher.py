@@ -1075,7 +1075,8 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         if exchange not in AB_EXCHANGES:
             return
         sym = normalize_symbol(raw_symbol)
-        if not sym:
+        if sym is None:
+            print(f"[{exchange}] Unrecognized symbol: {raw_symbol}", file=sys.stderr)
             return
         
         modified = False
@@ -4942,6 +4943,78 @@ async def _kucoin_ping_loop(ws, interval: float):
     except asyncio.CancelledError:
         pass
 
+class KuCoinFundingMonitor:
+    """Monitor Kucoin funding announcements and publish updates."""
+
+    def __init__(self, cb, status_cb, index_cb=None):
+        self._cb = cb
+        self._status_cb = status_cb
+        self._index_cb = index_cb
+
+    async def run(self):
+        subs = [
+            {
+                "id": 0,
+                "type": "subscribe",
+                "topic": "/contract/announcement",
+                "privateChannel": False,
+                "response": True,
+            }
+        ]
+        while True:
+            url, interval = await _kucoin_ws_info()
+            try:
+                async with websockets.connect(
+                    url,
+                    ping_interval=None,
+                    open_timeout=KUCOIN_OPEN_TIMEOUT,
+                    close_timeout=KUCOIN_CLOSE_TIMEOUT,
+                ) as ws:
+                    self._status_cb("Kucoin", True)
+                    print("[Kucoin] Connected")
+                    for sub in subs:
+                        await ws.send(json.dumps(sub))
+                    ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
+                    try:
+                        async for raw in ws:
+                            if isinstance(raw, (bytes, bytearray)):
+                                try:
+                                    raw = gzip.decompress(raw).decode()
+                                except Exception:
+                                    continue
+                            m = json.loads(raw)
+                            if m.get("type") == "ping":
+                                await ws.send(json.dumps({"id": m.get("id"), "type": "pong"}))
+                                continue
+                            if m.get("type") != "message":
+                                continue
+                            if str(m.get("topic", "")) == "/contract/announcement":
+                                if m.get("subject") not in ("funding.begin", "funding.end"):
+                                    continue
+                                d = m.get("data", {})
+                                sym = d.get("symbol") or d.get("symbolName")
+                                rate = d.get("fundingRate")
+                                next_ts = d.get("nextFundingTime")
+                                if sym and rate is not None:
+                                    ts = None
+                                    if next_ts is not None:
+                                        try:
+                                            ts = int(next_ts) / 1000
+                                        except (TypeError, ValueError):
+                                            ts = None
+                                    self._cb("Kucoin", sym, float(rate) * 100, ts)
+                    finally:
+                        ping_task.cancel()
+                        await asyncio.gather(ping_task, return_exceptions=True)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if not _loop_running():
+                    break
+                self._status_cb("Kucoin", False)
+                print(f"[Kucoin] Error: {e}, reconnecting in 5s")
+                await _safe_sleep(5)
+
 async def publish_kucoin(cb, status_cb, index_cb=None):
     subs = [
         {
@@ -5427,7 +5500,9 @@ def main():
         window._ws_tasks.append(loop.create_task(publish_bybit   (fr_cb, window._update_status_fr, window.update_index_price)))
         window._ws_tasks.append(loop.create_task(publish_bitget  (fr_cb, window._update_status_fr, window.update_index_price)))
         window._ws_tasks.append(loop.create_task(publish_gateio  (fr_cb, window._update_status_fr, window.update_index_price)))
-        window._ws_tasks.append(loop.create_task(publish_kucoin  (fr_cb, window._update_status_fr, window.update_index_price)))
+        kucoin_monitor = KuCoinFundingMonitor(fr_cb, window._update_status_fr, window.update_index_price)
+        window._kucoin_monitor = kucoin_monitor
+        window._ws_tasks.append(loop.create_task(kucoin_monitor.run()))
 
         # Start ask/bid feeds immediately but keep the tab closed
         window.start_askbid_feeds()
