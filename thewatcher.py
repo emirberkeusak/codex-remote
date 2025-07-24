@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 
 from PySide6 import QtWidgets, QtCore, QtGui, QtCharts
 from PySide6.QtWidgets import QHeaderView
+import logging
 from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QDateTimeAxis, QValueAxis)
 from PySide6.QtWidgets import QGraphicsSimpleTextItem
 from PySide6.QtCore import Qt
@@ -100,6 +101,14 @@ FEE_RATE_BUY  = 0.0005  # Commission rate when buying
 FEE_RATE_SELL = 0.0005  # Commission rate when selling
 DEBUG_BITGET_ORDERBOOK = False
 
+# Kucoin debug logging configuration
+KUCOIN_LOG_FILE = "kucoin_debug.log"
+kucoin_logger = logging.getLogger("kucoin")
+if not kucoin_logger.handlers:
+    kucoin_logger.setLevel(logging.DEBUG)
+    _fh = logging.FileHandler(KUCOIN_LOG_FILE, encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+    kucoin_logger.addHandler(_fh)
 
 # --- Helper parsers -------------------------------------------------------
 def _parse_float(text: str) -> float | None:
@@ -821,11 +830,13 @@ async def fetch_kucoin_swaps() -> list[str]:
     async with aiohttp.ClientSession() as s:
         r = await s.get(KUCOIN_REST_CONTRACTS)
         j = await r.json()
-    return [
+    syms = [
         e["symbol"]
         for e in j.get("data", [])
         if isinstance(e.get("symbol"), str) and e["symbol"].upper().endswith("USDTM")
     ]
+    kucoin_logger.debug("Fetched swaps: %s", syms)
+    return syms
 
 async def get_all_kucoin_funding_rates_fast() -> list[tuple[str, float, float | None]]:
     """Fetch current funding rates for all Kucoin contracts quickly."""
@@ -1074,14 +1085,20 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         # 1) Symbol normalize
         if exchange not in AB_EXCHANGES:
             return
+        if exchange == "Kucoin":
+            kucoin_logger.debug(
+                "Update call raw_symbol=%s bid=%s ask=%s", raw_symbol, bid, ask
+            )
         sym = normalize_symbol(raw_symbol)
         if sym is None:
             if exchange == "Kucoin":
                 print(f"[KUCOIN ERROR] Normalize edilemedi: {raw_symbol}")
+                kucoin_logger.error("Normalize failed for %s", raw_symbol)
             return
         if sym not in self._data:
             if exchange == "Kucoin":
                 print(f"[KUCOIN GUI] Yeni sembol: {sym} (raw: {raw_symbol})")
+                kucoin_logger.debug("New symbol %s from raw %s", sym, raw_symbol)
         
         modified = False
         # 2) Yeni sembol ekle
@@ -1111,6 +1128,10 @@ class AskBidTableModel(QtCore.QAbstractTableModel):
         self._prev[key_bid] = bid
         self._prev[key_ask] = ask
         self._data[sym][exchange] = (bid, ask, bid_qty, ask_qty)
+        if exchange == "Kucoin":
+            kucoin_logger.debug(
+                "Stored %s %s bid=%s ask=%s", exchange, sym, bid, ask
+            )
 
         # 5) Hücreyi güncelle
         row = self._row_map.get(sym, self._symbols.index(sym))
@@ -3888,6 +3909,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ─── WebSocket’ten gelen verileri önce dict’e koyan metod ───
     def _enqueue_askbid(self, exchange, symbol, bid, ask, bid_qty=None, ask_qty=None):
+        if exchange == "Kucoin":
+            kucoin_logger.debug(
+                "Enqueue askbid %s %s bid=%s ask=%s bid_qty=%s ask_qty=%s",
+                exchange,
+                symbol,
+                bid,
+                ask,
+                bid_qty,
+                ask_qty,
+            )
         self._askbid_data[(exchange, symbol)] = (bid, ask, bid_qty, ask_qty)
         if not self._askbid_timer.isActive():
             self._askbid_timer.start(100)
@@ -3923,6 +3954,14 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         for (exchange, symbol), (bid, ask, bid_qty, ask_qty) in self._askbid_data.items():
+            if exchange == "Kucoin":
+                kucoin_logger.debug(
+                    "Flush askbid %s %s bid=%s ask=%s",
+                    exchange,
+                    symbol,
+                    bid,
+                    ask,
+                )
             if symbol and isinstance(symbol, str):
                 self.askbid_model.update_askbid(exchange, symbol, bid, ask, bid_qty, ask_qty)
                 for win in list(self.chart_windows):
@@ -4937,6 +4976,7 @@ async def _kucoin_ws_info():
     )
 
     interval = server.get("pingInterval", 20000) / 1000
+    kucoin_logger.debug("WS info url=%s interval=%s", url, interval)
     return url, interval
 
 async def _kucoin_ping_loop(ws, interval: float):
@@ -4965,6 +5005,7 @@ class KuCoinFundingMonitor:
                 "response": True,
             }
         ]
+
         while True:
             url, interval = await _kucoin_ws_info()
             try:
@@ -4981,6 +5022,7 @@ class KuCoinFundingMonitor:
                     ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
                     try:
                         async for raw in ws:
+                            kucoin_logger.debug("Raw funding: %s", raw)
                             if isinstance(raw, (bytes, bytearray)):
                                 try:
                                     raw = gzip.decompress(raw).decode()
@@ -5006,6 +5048,12 @@ class KuCoinFundingMonitor:
                                             ts = int(next_ts) / 1000
                                         except (TypeError, ValueError):
                                             ts = None
+                                            kucoin_logger.debug(
+                                        "Parsed funding sym=%s rate=%s next_ts=%s",
+                                        sym,
+                                        rate,
+                                        ts,
+                                    )
                                     self._cb("Kucoin", sym, float(rate) * 100, ts)
                     finally:
                         ping_task.cancel()
@@ -5017,6 +5065,7 @@ class KuCoinFundingMonitor:
                     break
                 self._status_cb("Kucoin", False)
                 print(f"[Kucoin] Error: {e}, reconnecting in 5s")
+                kucoin_logger.error("Funding error: %s", e)
                 await _safe_sleep(5)
 
 async def publish_kucoin(cb, status_cb, index_cb=None):
@@ -5040,15 +5089,18 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
             ) as ws:
                 status_cb("Kucoin", True)
                 print("[Kucoin] Connected")
+                kucoin_logger.debug("Funding connected")
                 for sub in subs:
                     await ws.send(json.dumps(sub))
                 ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
                 try:
                     async for raw in ws:
+                        kucoin_logger.debug("Raw funding: %s", raw)
                         if isinstance(raw, (bytes, bytearray)):
                             try:
                                 raw = gzip.decompress(raw).decode()
                             except Exception:
+                                kucoin_logger.debug("Failed to decompress raw funding message")
                                 continue
                         m = json.loads(raw)
                         if m.get("type") == "ping":
@@ -5070,6 +5122,12 @@ async def publish_kucoin(cb, status_cb, index_cb=None):
                                         ts = int(next_ts) / 1000
                                     except (TypeError, ValueError):
                                         ts = None
+                                kucoin_logger.debug(
+                                    "Parsed funding sym=%s rate=%s next_ts=%s",
+                                    sym,
+                                    rate,
+                                    ts,
+                                )
                                 cb("Kucoin", sym, float(rate) * 100, ts)
                 finally:
                     ping_task.cancel()
@@ -5101,15 +5159,18 @@ async def publish_kucoin_askbid(cb, status_cb):
             ) as ws:
                 status_cb("Kucoin", True)
                 print("[Kucoin AskBid] Connected")
+                kucoin_logger.debug("AskBid connected")
                 for sub in subs:
                     await ws.send(json.dumps(sub))
                 ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
                 try:
                     async for raw in ws:
+                        kucoin_logger.debug("Raw askbid: %s", raw)
                         if isinstance(raw, (bytes, bytearray)):
                             try:
                                 raw = gzip.decompress(raw).decode()
                             except Exception:
+                                kucoin_logger.debug("Failed to decompress raw message")
                                 continue
                         m = json.loads(raw)
                         if m.get("type") == "ping":
@@ -5127,6 +5188,14 @@ async def publish_kucoin_askbid(cb, status_cb):
                             bid_sz = d.get("bestBidSize")
                             ask_sz = d.get("bestAskSize")
                             if sym and bid is not None and ask is not None:
+                                kucoin_logger.debug(
+                                    "Parsed askbid sym=%s bid=%s ask=%s bid_sz=%s ask_sz=%s",
+                                    sym,
+                                    bid,
+                                    ask,
+                                    bid_sz,
+                                    ask_sz,
+                                )
                                 cb(
                                     "Kucoin",
                                     sym,
@@ -5145,6 +5214,7 @@ async def publish_kucoin_askbid(cb, status_cb):
                 break
             status_cb("Kucoin", False)
             print(f"[Kucoin AskBid] Error: {e}, reconnecting in 5s")
+            kucoin_logger.error("AskBid error: %s", e)
             await _safe_sleep(5)
 
 async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
@@ -5164,15 +5234,18 @@ async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
             ) as ws:
                 status_cb("Kucoin", True)
                 print("[Kucoin Orderbook] Connected")
+                kucoin_logger.debug("Orderbook connected")
                 for sub in subs:
                     await ws.send(json.dumps(sub))
                 ping_task = asyncio.create_task(_kucoin_ping_loop(ws, interval))
                 try:
                     async for raw in ws:
+                        kucoin_logger.debug("Raw orderbook: %s", raw)
                         if isinstance(raw, (bytes, bytearray)):
                             try:
                                 raw = gzip.decompress(raw).decode()
                             except Exception:
+                                kucoin_logger.debug("Failed to decompress raw orderbook message")
                                 continue
                         m = json.loads(raw)
                         if m.get("type") == "ping":
@@ -5190,6 +5263,7 @@ async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
                                 (float(p), float(q)) for p, q, *_ in data.get("asks", [])[:3]
                             ]
                             if sym:
+                                kucoin_logger.debug("Parsed orderbook %s bids=%s asks=%s", sym, bids, asks)
                                 cb(sym, bids, asks)
                 finally:
                     ping_task.cancel()
@@ -5201,6 +5275,7 @@ async def publish_kucoin_orderbook(symbols: list[str], cb, status_cb):
                 break
             status_cb("Kucoin", False)
             print(f"[Kucoin Orderbook] Error: {e}, reconnecting in 5s")
+            kucoin_logger.error("Orderbook error: %s", e)
             await _safe_sleep(5)
 
 async def publish_binance_orderbook(symbols: list[str], cb, status_cb):
