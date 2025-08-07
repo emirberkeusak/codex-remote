@@ -10,16 +10,15 @@ load_dotenv()
 
 
 # API anahtarları
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-
-if not API_KEY or not API_KEY.strip():
-    raise EnvironmentError("BINANCE_API_KEY environment variable is missing or empty.")
-if not API_SECRET or not API_SECRET.strip():
-    raise EnvironmentError("BINANCE_API_SECRET environment variable is missing or empty.")
-
-API_KEY = API_KEY.strip()
-API_SECRET = API_SECRET.strip().encode()
+API_KEY = os.getenv(
+    "BINANCE_API_KEY",
+    "AexWengZkPZhwegOqvKkPtjOeRBxokLoRAaYoDLzlJAK3k3dn7wnTXXA2arIbVRY",
+)
+API_SECRET = os.getenv(
+    "BINANCE_API_SECRET",
+    "J3u7BuTlOpjHMxzn1Gj5Gd21folNpfk1DWH71Oixlx5yYuRq9ysc29uuLZJLxVBU",
+)
+API_SECRET = API_SECRET.encode()
 
 # Binance Futures API bilgileri
 BASE_URL = "https://fapi.binance.com"
@@ -67,7 +66,8 @@ def get_futures_symbols():
         res = request_with_backoff(url)
         res.raise_for_status()
         data = res.json()
-        return [s['symbol'] for s in data['symbols']]
+        # Filter for USDT-margined instruments only
+        return [s["symbol"] for s in data["symbols"] if s.get("quoteAsset") == "USDT"]
     except Exception as e:
         logging.error(f"⚠️ Futures sembolleri alınamadı: {e}")
         return []
@@ -97,9 +97,9 @@ def get_traded_symbols():
 # Tüm semboller için geçmiş işlemleri getir
 def get_all_futures_trades():
     all_trades = []
-    symbols = get_traded_symbols()
+    symbols = get_futures_symbols()
     if not symbols:
-        print("⚠️ İşlem yapılmış sembol bulunamadı.")
+        print("⚠️ Futures sembolü bulunamadı.")
         return []
 
     for symbol in symbols:
@@ -111,7 +111,9 @@ def get_all_futures_trades():
                 if timestamp is None:
                     print("⚠️ Sunucu zamanına erişilemedi, yerel zaman kullanılacak.")
                     timestamp = int(time.time() * 1000)
-                params = f"symbol={symbol}&timestamp={timestamp}&limit=1000&recvWindow=60000"
+                params = (
+                    f"symbol={symbol}&fromId={from_id}&limit=1000&timestamp={timestamp}&recvWindow=60000"
+                )
 
                 signature = get_signature(params)
                 headers = {"X-MBX-APIKEY": API_KEY}
@@ -131,9 +133,7 @@ def get_all_futures_trades():
 
                 all_trades.extend(data)
 
-                from_id = data[-1]['id'] + 1
-                if len(data) < 1000:
-                    break
+                from_id = data[-1]["id"] + 1
                 time.sleep(0.4)
             except Exception as e:
                 logging.error(f"❌ {symbol} için hata oluştu: {e}")
