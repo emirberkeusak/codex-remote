@@ -1,161 +1,102 @@
-import requests
-import time
-import hmac
-import hashlib
-import pandas as pd
 import os
-import logging
-from dotenv import load_dotenv
-load_dotenv()
+from binance import Client
+import pandas as pd
+from datetime import datetime
+import time
 
+# API anahtarlarınız
+BINANCE_API_KEY = "AexWengZkPZhwegOqvKkPtjOeRBxokLoRAaYoDLzlJAK3k3dn7wnTXXA2arIbVRY"
+BINANCE_API_SECRET = "J3u7BuTlOpjHMxzn1Gj5Gd21folNpfk1DWH71Oixlx5yYuRq9ysc29uuLZJLxVBU"
 
-# API anahtarları
-API_KEY = os.getenv(
-    "BINANCE_API_KEY",
-    "AexWengZkPZhwegOqvKkPtjOeRBxokLoRAaYoDLzlJAK3k3dn7wnTXXA2arIbVRY",
-)
-API_SECRET = os.getenv(
-    "BINANCE_API_SECRET",
-    "J3u7BuTlOpjHMxzn1Gj5Gd21folNpfk1DWH71Oixlx5yYuRq9ysc29uuLZJLxVBU",
-)
-API_SECRET = API_SECRET.encode()
-
-# Binance Futures API bilgileri
-BASE_URL = "https://fapi.binance.com"
-ENDPOINT = "/fapi/v1/userTrades"
-
-# İmzalama fonksiyonu
-def get_signature(query_string: str) -> str:
-    return hmac.new(API_SECRET, query_string.encode('utf-8'), hashlib.sha256).hexdigest()
-
-# Requests with retry and exponential backoff
-def request_with_backoff(url, headers=None, max_retries=5, backoff_factor=1):
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.get(url, headers=headers)
-            status = response.status_code
-            if status == 429 or 500 <= status < 600:
-                logging.warning(
-                    f"Attempt {attempt} failed with status {status} for {url}"
-                )
-            else:
-                return response
-        except requests.RequestException as e:
-            logging.warning(f"Attempt {attempt} error for {url}: {e}")
-
-        if attempt < max_retries:
-            sleep_time = backoff_factor * (2 ** (attempt - 1))
-            time.sleep(sleep_time)
-
-    raise Exception(f"All {max_retries} attempts failed for {url}")
-
-def get_server_time():
+def get_all_futures_income():
+    # Binance istemcisini başlat
+    client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+    
+    # API bağlantı testi
     try:
-        url = f"{BASE_URL}/fapi/v1/time"
-        res = requests.get(url)
-        res.raise_for_status()
-        return res.json()["serverTime"]
+        account_info = client.futures_account()
+        print(f"API Bağlantısı Başarılı! Hesap Bakiyesi: {account_info['totalWalletBalance']} USDT")
     except Exception as e:
-        print(f"❌ Sunucu zamanı alınamadı: {e}")
-        return None
-
-# Futures'taki tüm sembolleri getir
-def get_futures_symbols():
-    try:
-        url = f"{BASE_URL}/fapi/v1/exchangeInfo"
-        res = request_with_backoff(url)
-        res.raise_for_status()
-        data = res.json()
-        # Filter for USDT-margined instruments only
-        return [s["symbol"] for s in data["symbols"] if s.get("quoteAsset") == "USDT"]
-    except Exception as e:
-        logging.error(f"⚠️ Futures sembolleri alınamadı: {e}")
+        print(f"API Bağlantı Hatası: {e}")
         return []
     
-# Açık pozisyonu olan veya geçmişte işlem yapılmış sembolleri getir
-def get_traded_symbols():
-    try:
-        timestamp = int(time.time() * 1000)
-        params = f"timestamp={timestamp}"
-        signature = get_signature(params)
-        headers = {"X-MBX-APIKEY": API_KEY}
-        url = f"{BASE_URL}/fapi/v2/account?{params}&signature={signature}"
-        res = requests.get(url, headers=headers)
-        res.raise_for_status()
-        data = res.json()
-        symbols = []
-        for pos in data.get("positions", []):
-            position_amt = float(pos.get("positionAmt", 0))
-            update_time = pos.get("updateTime", 0)
-            if position_amt != 0 or update_time > 0:
-                symbols.append(pos["symbol"])
-        return symbols
-    except Exception as e:
-        print(f"⚠️ Pozisyon/işlem sembolleri alınamadı: {e}")
-        return []
-
-# Tüm semboller için geçmiş işlemleri getir
-def get_all_futures_trades():
-    all_trades = []
-    symbols = get_futures_symbols()
-    if not symbols:
-        print("⚠️ Futures sembolü bulunamadı.")
-        return []
-
-    for symbol in symbols:
-        logging.info(f"🔄 {symbol} için işlemler çekiliyor...")
-        from_id = 0
-        while True:
-            try:
-                timestamp = get_server_time()
-                if timestamp is None:
-                    print("⚠️ Sunucu zamanına erişilemedi, yerel zaman kullanılacak.")
-                    timestamp = int(time.time() * 1000)
-                params = (
-                    f"symbol={symbol}&fromId={from_id}&limit=1000&timestamp={timestamp}&recvWindow=60000"
-                )
-
-                signature = get_signature(params)
-                headers = {"X-MBX-APIKEY": API_KEY}
-                url = f"{BASE_URL}{ENDPOINT}?{params}&signature={signature}"
-
-                response = request_with_backoff(url, headers=headers)
-                if response.status_code == 400 and "Invalid symbol" in response.text:
-                    break  # geçersiz sembol
-                response.raise_for_status()
-
-                data = response.json()
-                if not data:
-                    break
-
-                for trade in data:
-                    trade["symbol"] = symbol  # sembol ekle
-
-                all_trades.extend(data)
-
-                from_id = data[-1]["id"] + 1
-                time.sleep(0.4)
-            except Exception as e:
-                logging.error(f"❌ {symbol} için hata oluştu: {e}")
+    all_income = []
+    start_time = None
+    fetch_count = 0
+    
+    print("İşlem geçmişi alınıyor...")
+    while True:
+        try:
+            # Parametreleri hazırla
+            params = {'limit': 1000}
+            if start_time:
+                params['startTime'] = start_time
+            
+            # Gelir geçmişini çek
+            income = client.futures_income_history(**params)
+            fetch_count += 1
+            
+            if not income:
+                print("Daha fazla veri bulunamadı.")
                 break
+                
+            all_income.extend(income)
+            print(f"Alınan batch: {fetch_count}, Kayıt sayısı: {len(income)}, Toplam: {len(all_income)}")
+            
+            # Son kaydın zamanını al (bir sonraki sayfa için)
+            last_record_time = int(income[-1]['time'])
+            start_time = last_record_time + 1
+            
+            # Rate limit koruması
+            time.sleep(0.2)
+            
+            # Son sayfa kontrolü
+            if len(income) < 1000:
+                print(f"Tüm veriler alındı. Toplam kayıt: {len(all_income)}")
+                break
+                
+        except Exception as e:
+            print(f"Hata oluştu: {e}")
+            break
 
-    return all_trades
+    return all_income
 
-# Excel'e kaydet
-def save_to_excel(trades):
-    if not trades:
-        print("❗ Hiç işlem bulunamadı.")
+def save_to_excel(income_data):
+    if not income_data:
+        print("Kaydedilecek işlem bulunamadı.")
         return
+    
+    # Veriyi DataFrame'e dönüştür
+    df = pd.DataFrame(income_data)
+    
+    # Zaman damgasını düzenle
+    df['time'] = pd.to_datetime(df['time'], unit='ms')
+    
+    # Sütunları yeniden düzenle
+    columns = ['time', 'symbol', 'incomeType', 'income', 'asset', 'info', 'tradeId', 'tranId']
+    
+    # Excel'e kaydet
+    filename = f"binance_futures_income_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    df[columns].to_excel(filename, index=False)
+    print(f"{len(df)} gelir kaydı Excel'e kaydedildi: {filename}")
+    return filename
 
-    df = pd.DataFrame(trades)
-    if 'time' in df.columns:
-        df['time'] = pd.to_datetime(df['time'], unit='ms')
-    df = df.sort_values(by='time')
-
-    df.to_excel("binance_futures_trade_history.xlsx", index=False)
-    print("✅ Excel dosyası oluşturuldu: binance_futures_trade_history.xlsx")
-
-# Çalıştır
 if __name__ == "__main__":
-    trades = get_all_futures_trades()
-    save_to_excel(trades)
+    print("Binance Futures Gelir Geçmişi Aktarımı Başlatılıyor...")
+    print(f"Başlangıç Zamanı: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    income_data = get_all_futures_income()
+    
+    if income_data:
+        print(f"\nToplam {len(income_data)} gelir kaydı bulundu")
+        print(f"İlk kayıt tarihi: {pd.to_datetime(income_data[0]['time'], unit='ms')}")
+        print(f"Son kayıt tarihi: {pd.to_datetime(income_data[-1]['time'], unit='ms')}")
+        file_path = save_to_excel(income_data)
+        print(f"Excel dosyası oluşturuldu: {file_path}")
+    else:
+        print("\nHiç gelir kaydı bulunamadı. Olası nedenler:")
+        print("1. Bu hesapta hiç işlem yapılmamış olabilir")
+        print("2. API anahtarında futures izni eksik olabilir")
+        print("3. IP adresiniz Binance API'de kısıtlı olabilir")
+    
+    print("\nİşlem tamamlandı")
