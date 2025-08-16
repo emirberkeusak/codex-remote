@@ -30,9 +30,9 @@ BOT_TOKEN  = '7295679982:AAGZfrco1rgSPbGdnkVaJj_FXHptSfyLUgo'
 CHAT_ID   = -1002503387372    # grubunuzun chat_id’si
 THREAD_ID =  10363            # mesaj_thread_id
 
-SYMBOLS_FILE = r'C:\Users\Administrator\RISK\symbols.txt'
-STATE_FILE   = r'C:\Users\Administrator\RISK\risk_limits.json'
-OUTPUT_DIR   = r'C:\Users\Administrator\RISK'
+SYMBOLS_FILE = r'C:\Users\EmirBerkeUsak\python\symbols.txt'
+STATE_FILE   = r'C:\Users\EmirBerkeUsak\python\risk_limits.json'
+OUTPUT_DIR   = r'C:\Users\EmirBerkeUsak\python\out'
 
 BASE_URL_BINANCE = 'https://fapi.binance.com'
 ENDPOINT_BINANCE = '/fapi/v1/leverageBracket'
@@ -264,6 +264,10 @@ def fetch_all_contracts_darkex(api_key: str, secret_key: str) -> list[dict]:
         "X-CH-TS":         timestamp,
         "X-CH-SIGN":       signature
     }
+
+    logging.debug(f"Request headers: {headers}")
+    logging.debug(f"Request body: {body_json}")
+    
 
     for attempt in range(3):  # 3 kez dene
         try:
