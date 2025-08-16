@@ -425,12 +425,34 @@ def check_binance_tiers(filepath: str = "binance_tiers.json"):
     """Binance risk limit değişikliklerini kontrol eder."""
     old_data = {}
     p = Path(filepath)
-    if p.exists():
+
+    # 🚨 Eğer dosya hiç yoksa: sadece snapshot kaydet ve çık
+    if not p.exists():
+        with requests.Session() as session:
+            try:
+                all_data = fetch_all_brackets_binance(session)
+            except Exception as e:
+                print(f"Binance risk limit verisi alınamadı: {e}", file=sys.stderr)
+                return
+        new_data = {}
+        for item in all_data or []:
+            sym = item.get("symbol")
+            if sym:
+                new_data[sym] = binance_brackets_to_tiers_entry(item)
         try:
-            with p.open("r", encoding="utf-8") as f:
-                old_data = json.load(f)
-        except Exception:
-            old_data = {}
+            with p.open("w", encoding="utf-8") as f:
+                json.dump(new_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Binance risk limit snapshot kaydedilemedi: {e}", file=sys.stderr)
+        print("İlk çalıştırma: snapshot kaydedildi, Telegram'a mesaj gönderilmedi.")
+        return
+
+    # 🚨 Buradan sonrası artık kıyaslama kısmı
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            old_data = json.load(f)
+    except Exception:
+        old_data = {}
 
     with requests.Session() as session:
         try:
@@ -543,20 +565,20 @@ def main():
             print(f"API hata cevabı: {data}", file=sys.stderr)
             sys.exit(2)
 
-    payload_data = data.get("data", {})
-    rows = extract_symbol_id(payload_data)
+        payload_data = data.get("data", {})
+        rows = extract_symbol_id(payload_data)
 
-    desktop = get_desktop_path()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"darkex_symbol_contracts_{timestamp}.xlsx"
-    save_path = desktop / filename
+        desktop = get_desktop_path()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"darkex_symbol_contracts_{timestamp}.xlsx"
+        save_path = desktop / filename
 
-    try:
-        save_to_excel(rows, save_path)
-        print(f"{len(rows)} satır Excel dosyasına yazıldı ve kaydedildi: {save_path}")
-    except Exception as e:
-        print(f"Excel yazma/kaydetme hatası: {e}", file=sys.stderr)
-        sys.exit(3)
+        try:
+            save_to_excel(rows, save_path)
+            print(f"{len(rows)} satır Excel dosyasına yazıldı ve kaydedildi: {save_path}")
+        except Exception as e:
+            print(f"Excel yazma/kaydetme hatası: {e}", file=sys.stderr)
+            sys.exit(3)
 
     while True:
         try:
