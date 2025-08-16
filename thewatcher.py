@@ -10,7 +10,7 @@ import hashlib
 from pathlib import Path
 import requests
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment
@@ -60,9 +60,9 @@ ENDPOINT_BINANCE = "/fapi/v1/leverageBracket"  # tüm semboller için risk limit
 # ---------------------------
 # Telegram ayarları
 # ---------------------------
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
-TELEGRAM_THREAD_ID = "YOUR_THREAD_ID"
+TELEGRAM_BOT_TOKEN = "7295679982:AAGZfrco1rgSPbGdnkVaJj_FXHptSfyLUgo"
+TELEGRAM_CHAT_ID = "-1002503387372"
+TELEGRAM_THREAD_ID = "10363"
 
 
 def send_telegram_message(text: str):
@@ -445,26 +445,56 @@ def check_binance_tiers(filepath: str = "binance_tiers.json"):
         if sym:
             new_data[sym] = binance_brackets_to_tiers_entry(item)
 
+    any_changes = False
+    from itertools import zip_longest
     for sym, new_tiers in new_data.items():
         old_tiers = old_data.get(sym)
         if old_tiers != new_tiers:
-            now_str = datetime.now().strftime("%H:%M:%S")
-            lines = [f"{sym} {now_str}", "Eski Risk Limitleri:"]
-            if old_tiers:
-                lines.append("level | maxLever | minPositionValue | maxPositionValue | minMarginRate")
-                for t in old_tiers:
-                    lines.append(
-                        f"{t.get('level',''):>5} | {t.get('maxLever',''):>8} | {t.get('minPositionValue',''):>16} | {t.get('maxPositionValue',''):>16} | {t.get('minMarginRate',''):>12}"
-                    )
-            else:
-                lines.append("(veri yok)")
-            lines.append("Yeni Risk Limitleri:")
-            lines.append("level | maxLever | minPositionValue | maxPositionValue | minMarginRate")
-            for t in new_tiers:
-                lines.append(
-                    f"{t.get('level',''):>5} | {t.get('maxLever',''):>8} | {t.get('minPositionValue',''):>16} | {t.get('maxPositionValue',''):>16} | {t.get('minMarginRate',''):>12}"
-                )
-            send_telegram_message("\n".join(lines))
+            any_changes = True
+            now = datetime.utcnow() + timedelta(hours=2)
+            now_str = now.strftime("%H:%M:%S %d-%m-%Y (UTC+2)")
+            lines = [
+                "🔔 Risk Limit Güncellemesi",
+                "",
+                f"{sym}",
+                "",
+                f"⏱️ Saat: {now_str}",
+                "",
+                "Eski Risk Limitleri",
+            ]
+            for idx, (old, new) in enumerate(zip_longest(old_tiers or [], new_tiers or []), start=1):
+                lines.append(f"• Tier {idx}:")
+                old_lev = old.get("maxLever") if old else "-"
+                old_max = old.get("maxPositionValue") if old else "-"
+                old_min = old.get("minPositionValue") if old else "-"
+                old_mm = old.get("minMarginRate") if old else "-"
+                new_lev = new.get("maxLever") if new else "-"
+                new_max = new.get("maxPositionValue") if new else "-"
+                new_min = new.get("minPositionValue") if new else "-"
+                new_mm = new.get("minMarginRate") if new else "-"
+                lev_arrow = f" → {new_lev}" if old_lev != new_lev else ""
+                max_arrow = f" → {new_max}" if old_max != new_max else ""
+                min_arrow = f" → {new_min}" if old_min != new_min else ""
+                mm_arrow = f" → {new_mm}" if old_mm != new_mm else ""
+                lines.append(f"  - Leverage: {old_lev}{lev_arrow}")
+                lines.append(f"  - Max Notional: {old_max}{max_arrow}")
+                lines.append(f"  - Min Notional: {old_min}{min_arrow}")
+                lines.append(f"  - Maintenance Margin: {old_mm}{mm_arrow}")
+                lines.append("")
+            lines.append("🔄 Güncelleme Detayları:")
+            lines.append("")
+            lines.append("Yeni Risk Limitleri")
+            for idx, t in enumerate(new_tiers or [], start=1):
+                lines.append(f"• Tier {idx}:")
+                lines.append(f"  - Leverage: {t.get('maxLever')}")
+                lines.append(f"  - Max Notional: {t.get('maxPositionValue')}")
+                lines.append(f"  - Min Notional: {t.get('minPositionValue')}")
+                lines.append(f"  - Maintenance Margin: {t.get('minMarginRate')}")
+                lines.append("")
+            send_telegram_message("\n".join(line for line in lines).strip())
+
+    if not any_changes:
+        send_telegram_message("Risk limitleri kontrol edildi. Herhangi bir değişiklik yok.")
 
     try:
         with p.open("w", encoding="utf-8") as f:
@@ -477,6 +507,8 @@ def check_binance_tiers(filepath: str = "binance_tiers.json"):
 # main
 # ---------------------------
 def main():
+    send_telegram_message("Bot başlatıldı")
+    
     # 1) contract_id_mapping.xlsx varsa: Darkex tier -> ardından Binance tier yazdır.
     mapping_file = find_contract_mapping_file()
     if mapping_file is not None:
@@ -494,23 +526,22 @@ def main():
             print()
             print_binance_tiers_for_symbols(symbols)
 
-        return   # ← Excel varsa buradan çıkıyoruz, payload’a hiç girmiyoruz
+    else:
+        # 2) Excel yoksa: public_info -> Excel'e yaz ve Masaüstüne kaydet
+        ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        payload = {"uaTime": ua_time}
 
-    # 2) Excel yoksa: public_info -> Excel'e yaz ve Masaüstüne kaydet
-    ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    payload = {"uaTime": ua_time}
+        try:
+            r = requests.post(URL, json=payload, headers=HEADERS, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            print(f"İstek hatası: {e}", file=sys.stderr)
+            sys.exit(1)
 
-    try:
-        r = requests.post(URL, json=payload, headers=HEADERS, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        print(f"İstek hatası: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    if data.get("code") != "0":
-        print(f"API hata cevabı: {data}", file=sys.stderr)
-        sys.exit(2)
+        if data.get("code") != "0":
+            print(f"API hata cevabı: {data}", file=sys.stderr)
+            sys.exit(2)
 
     payload_data = data.get("data", {})
     rows = extract_symbol_id(payload_data)
