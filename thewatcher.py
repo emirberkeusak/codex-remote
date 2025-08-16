@@ -1,680 +1,460 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# Gerekli paketler:
+# pip install requests openpyxl
 
+import sys
 import os
-import json
 import time
-from datetime import datetime
-from zoneinfo     import ZoneInfo
 import hmac
 import hashlib
-import logging
-import threading
+from pathlib import Path
 import requests
-import pandas as pd
-import re
-
 from datetime import datetime
-from zoneinfo import ZoneInfo
-from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
+from concurrent.futures import ThreadPoolExecutor
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, Alignment
 
-# timestamp in UTC+2
-TZ = ZoneInfo("Europe/Tirane")
 
-# ── CONFIG (Binance & Telegram) ─────────────────────────────────────────────────
-API_KEY_BINANCE    = 'iJmoTezYi1v82UJ6IFFYUtgoH7Xf5lmmmdbZguxS3BPhm93RMB7VM7slDfnp2TM2'
-API_SECRET_BINANCE = 'FXIEwjfjYuYFyAfpFT9ud5gluG3OzsNd68Fj7iPeIeXa1T2na6PwWpMPvcqO3lOy'
-BOT_TOKEN  = '7295679982:AAGZfrco1rgSPbGdnkVaJj_FXHptSfyLUgo'
+# ---------------------------
+# Darkex endpointleri
+# ---------------------------
+URL = "https://www.darkex.com/fe-co-api/common/public_info"
+TIER_URL = "https://www.darkex.com/fe-co-api/common/public_futures_contract_info"
 
-CHAT_ID   = -1002503387372    # grubunuzun chat_id’si
-THREAD_ID =  10363            # mesaj_thread_id
+HEADERS = {
+    "accept": "application/json, text/plain, */*",
+    "accept-encoding": "gzip, deflate, br, zstd",
+    "accept-language": "en-US,en;q=0.9",
+    "content-type": "application/json;charset=UTF-8",
+    "cookie": "lan=en_US; cusSkin=1; _fbp=fb.1.1745354379248.163616128196321939; _ga=GA1.1.1245577152.1745354379; CHFIT_EXPIRATION=1776890380191; CHFIT_DEVICEID=lkWin7X1M2i0yHLWHdFi00Cbn-s1hP8kuFE_1mQ6oV7P9sQbcCs9Iov7cdoFlD1R; _c_WBKFRo=f9NDVPcQW7DStvrplQolw2uHnp5MAaBy5wc2HS5a; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%2232969520%22%2C%22first_id%22%3A%221965f3a4c5934-097b306403171b8-26011c51-2073600-1965f3a4c5a11e0%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMTk2NWYzYTRjNTkzNC0wOTdiMzA2NDAzMTcxYjgtMjYwMTFjNTEtMjA3MzYwMC0xOTY1ZjNhNGM1YTExZTAiLCIkaWRlbnRpdHlfbG9naW5faWQiOiIzMjk2OTUyMCJ9%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%2232969520%22%7D%7D; _ga_F1W306LH6F=GS2.1.s1747236858$o17$g0$t1747236858$j0$l0$h0; _ga_C8LDVXWDFX=GS2.1.s1747914149$o1$g1$t1747914351$j0$l0$h0; _ym_uid=1751001675844873554; _ym_d=1751001675; __adroll_fpc=06edb2ca75aa9ba5d43e72804323fd14-1751001675526; FP_DEVICE_ID=911fd120906b129f1e5bd990b8bce28c; FP_DEVICE_VISITORID=c5975ddb8cc0c21ee8c522e214aa267f; __ar_v4=EYQ6NBYIZVHR5EJ6S6GMBM%3A20250726%3A9%7CH6G3HUORVBAH7GXUFX35SX%3A20250726%3A9%7CFZFY2R4NYBEW3BCPTLTO7I%3A20250726%3A9; lan.sig=DNIiOSD1Q3ofA_oyppgjDfS2LXe3cDxtJwaaLdF0lFs; JSESSIONID=3D87863CB7063EC16AF9907473CAD0FD; token=bbee1f3b62e0021379a0ea496450e9c15f7963eeb0e54238b969367a3e7b4021; isLogin=true; _gcl_au=1.1.1539652439.1755367154; _tt_enable_cookie=1; _ttp=01K2T0J8SZ9QF8NQHV16R45CW8_.tt.1; _ym_isad=2; ttcsid=1755367154502::kc4hHH0s1XXDchSNse9g.1.1755367557069; ttcsid_D28BJ0JC77UB6AOKCVE0=1755367154501::H1-vqyElou2RbjIxFZxx.1.1755367559055; _ga_4JHJ4YPRL8=GS2.1.s1755371256$o129$g0$t1755371256$j60$l0$h0; _ga_3JN0V1H9P0=GS2.1.s1755371256$o42$g0$t1755371256$j60$l0$h0",
+    "device": "c5975ddb8cc0c21ee8c522e214aa267f",
+    "exchange-client": "pc",
+    "exchange-language": "en_US",
+    "exchange-token": "bbee1f3b62e0021379a0ea496450e9c15f7963eeb0e54238b969367a3e7b4021",
+    "futures-version": "101",
+    "is-sub": "0",
+    "origin": "https://www.darkex.com",
+    "priority": "u=1, i",
+    "referer": "https://www.darkex.com/en_US/futures/futuresData?marginCoin=USDT&type=1&contractId=467",
+    "sec-ch-ua": "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": "\"Windows\"",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    # uuid-cu varsa ekleyebilirsiniz: "uuid-cu": "..."
+}
 
-SYMBOLS_FILE = r'C:\Users\EmirBerkeUsak\python\symbols.txt'
-STATE_FILE   = r'C:\Users\EmirBerkeUsak\python\risk_limits.json'
-OUTPUT_DIR   = r'C:\Users\EmirBerkeUsak\python\out'
 
-BASE_URL_BINANCE = 'https://fapi.binance.com'
-ENDPOINT_BINANCE = '/fapi/v1/leverageBracket'
+# ---------------------------
+# Binance (USDⓈ-M Futures) ayarları
+# ---------------------------
+API_KEY_BINANCE = "iJmoTezYi1v82UJ6IFFYUtgoH7Xf5lmmmdbZguxS3BPhm93RMB7VM7slDfnp2TM2"
+API_SECRET_BINANCE = "FXIEwjfjYuYFyAfpFT9ud5gluG3OzsNd68Fj7iPeIeXa1T2na6PwWpMPvcqO3lOy"
 
-# ── CONFIG (Darkex) ──────────────────────────────────────────────────────────────
-API_KEY_DARKEX    = "97f0c7f39fd0960985cc6ef2901cdc05"
-API_SECRET_DARKEX = "ed52be43f76ccf1f849434071a3a9a29"
+BASE_URL_BINANCE = "https://fapi.binance.com"
+ENDPOINT_BINANCE = "/fapi/v1/leverageBracket"  # tüm semboller için risk limit
 
-BASE_URL_DARKEX               = "https://futures.darkex.com"
-PUBLIC_INFO_PATH_DARKEX       = "/fe-co-api/common/public_info"
-CONTRACT_INFO_PATH_DARKEX     = "/fe-co-api/common/public_futures_contract_info"
-FULL_PUBLIC_INFO_URL_DARKEX   = BASE_URL_DARKEX + PUBLIC_INFO_PATH_DARKEX
-FULL_CONTRACT_INFO_URL_DARKEX = BASE_URL_DARKEX + CONTRACT_INFO_PATH_DARKEX
 
-# Zaman dilimi sabiti: Tirane saatine (UTC+2) göre
-TZ = ZoneInfo("Europe/Tirane")
-
-# ── LOGGING SETUP ────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    level=logging.INFO
-)
-
-# ── Ortak: Telegram’a Metin Mesajı Gönderme ────────────────────────────────────────
-def send_telegram(text: str):
+# ===========================
+# Mevcut yardımcılar (değişmeden)
+# ===========================
+def normalize_symbol(c: dict) -> str:
     """
-    Telegram’a bir mesaj göndermek için kullanılır.
+    Darkex sözleşme objesinden base/quote veya symbol alanlarını kullanarak
+    standart sembol (ör. BTCUSDT) oluşturur.
     """
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "message_thread_id": THREAD_ID,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    resp = requests.post(url, data=payload)
-    resp.raise_for_status()
+    base, quote = c.get("base"), c.get("quote")
+    if base and quote:
+        return f"{base}{quote}"
+    sym = c.get("symbol") or ""
+    return sym.replace("-", "")
 
 
-def send_document(file_path: str):
+def extract_symbol_id(data: dict):
     """
-    Telegram’a bir dosya (örneğin Excel .xlsx) göndermek için kullanılır.
+    API'den dönen data objesinden (data['contractList']) (symbol, contract_id) listesi çıkarır.
+    Alfabetik olarak sembole göre sıralar.
     """
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    with open(file_path, 'rb') as f:
-        files = {'document': (os.path.basename(file_path), f)}
-        data = {'chat_id': CHAT_ID, "message_thread_id": THREAD_ID}
-        resp = requests.post(url, data=data, files=files)
-        resp.raise_for_status()
-
-
-# ── BINANCE: Risk Limit Kontrol Fonksiyonları ────────────────────────────────────
-def load_symbols(path):
-    """
-    symbols.txt içindeki her satırı büyük harfe çevirip listeye döner.
-    """
-    with open(path, 'r', encoding='utf-8') as f:
-        return [s.strip().upper() for s in f if s.strip()]
-
-
-def fetch_all_brackets_binance():
-    """
-    Binance Futures API’dan tüm sembollerin risk limit tablolarını çeker.
-    """
-    ts = str(int(time.time() * 1000))
-    qs = f"timestamp={ts}"
-    signature = hmac.new(
-        API_SECRET_BINANCE.encode(),
-        qs.encode(),
-        hashlib.sha256
-    ).hexdigest()
-
-    url = f"{BASE_URL_BINANCE}{ENDPOINT_BINANCE}?{qs}&signature={signature}"
-    headers = {"X-MBX-APIKEY": API_KEY_BINANCE}
-
-    resp = requests.get(url, headers=headers, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def load_previous_state(path):
-    """
-    risk_limits.json dosyasını yükler; eğer yoksa boş dict döner.
-    """
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        return {}
-
-
-def save_state(path, data):
-    """
-    risk_limits.json dosyasına güncel durumu yazar.
-    """
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-
-def check_and_notify():
-    """
-    ● symbols.txt’teki sembolleri okur  
-    ● Binance’dan güncel risk limit bilgilerini çeker  
-    ● Önceki risk_limits.json ile karşılaştırır  
-    ● Değişiklik varsa detaylı mesaj gönderir,  
-      yoksa “Saat ve değişiklik yok” mesajı atar  
-    ● En son durumu risk_limits.json’a yazar  
-    """
-    symbols = load_symbols(SYMBOLS_FILE)
-    all_data = fetch_all_brackets_binance()
-
-    # Sadece symbols.txt içindeki sembolleri al
-    current = {
-        entry['symbol']: entry['brackets']
-        for entry in all_data
-        if entry['symbol'] in symbols
-    }
-
-    prev = load_previous_state(STATE_FILE)
-    now = datetime.now(TZ)
-    timestamp_str = now.strftime('%H:%M:%S %d-%m-%Y')
-
-    # Eğer önceki kayıt yoksa, yalnızca kaydet ve çık
-    if not prev:
-        msg0 = (
-            f"⚙️ *Risk Limit Monitor Başlatıldı*\n\n"
-            f"⏱️ Saat: {timestamp_str} (UTC+2)\n"
-            f"ℹ️ İlk yükleme: Önceki kayıt bulunamadı, mevcut durum kaydedildi."
-        )
-        logging.info("İlk çalışma, state kaydedildi.")
-        try:
-            send_telegram(msg0)
-            time.sleep(1)
-        except Exception:
-            pass
-        save_state(STATE_FILE, current)
-        return
-
-    # Önceki kayıt varsa, her sembolü tek tek kontrol et
-    changes = []
-    for sym, curr_br in current.items():
-        old_br = prev.get(sym)
-        if old_br is None:
-            # Önceki kayıtta olmayan, yeni eklenmiş sembol → atla
-            continue
-        if curr_br != old_br:
-            changes.append((sym, old_br, curr_br))
-
-    if changes:
-        field_names = {
-            'initialLeverage':  'Leverage',
-            'notionalCap':      'Max Notional',
-            'notionalFloor':    'Min Notional',
-            'maintMarginRatio': 'Maintenance Margin'
-        }
-
-        for sym, old, new in changes:
-            tier_diffs = []
-            for o, n in zip(old, new):
-                diffs = []
-                for key, label in field_names.items():
-                    if o.get(key) != n.get(key):
-                        if key == 'maintMarginRatio':
-                            old_pct = o[key] * 100
-                            new_pct = n[key] * 100
-                            diffs.append(f"{label}: {old_pct:.2f}% → {new_pct:.1f}%")
-                        elif key in ('notionalCap', 'notionalFloor'):
-                            diffs.append(f"{label}: {o[key]:,} → {n[key]:,}")
-                        else:
-                            diffs.append(f"{label}: {o[key]} → {n[key]}")
-                if diffs:
-                    tier_diffs.append((o['bracket'], diffs))
-
-            ts = datetime.now(TZ)
-            msg  = f"🔔 *Risk Limit Güncellemesi*\n\n"
-            msg += f"   `{sym}`\n\n"
-            msg += f"⏱️ Saat: {ts.strftime('%H:%M:%S %d-%m-%Y')} (UTC+2)\n\n"
-            msg += "🔄 Güncelleme Detayları:\n\n"
-            for tier, diffs in tier_diffs:
-                msg += f"• Tier {tier}:\n"
-                for diff in diffs:
-                    msg += f"  - {diff}\n"
-
-            logging.info(f"Değişiklik tespit edildi: {sym}")
-            try:
-                send_telegram(msg)
-                time.sleep(1)
-            except Exception:
-                pass
-
-        logging.info("Saat başı güncelleme tamamlandı.")
-    else:
-        msg_no = (
-            f"✅ *Risk Limit Kontrolü*\n\n"
-            f"⏱️ Saat: {timestamp_str} (UTC+2)\n"
-            f"✅ Herhangi bir değişiklik yok."
-        )
-        logging.info("Herhangi bir değişiklik bulunamadı.")
-        try:
-            send_telegram(msg_no)
-            time.sleep(1)
-        except Exception:
-            pass
-
-        logging.info("Saat başı güncelleme tamamlandı.")
-
-    save_state(STATE_FILE, current)
-
-
-# ── DARKEX: Risk Limit Çekme Fonksiyonları ────────────────────────────────────────
-def fetch_all_contracts_darkex(api_key: str, secret_key: str) -> list[dict]:
-    timestamp = str(int(time.time() * 1000))
-    body_dict = {}
-    body_json = json.dumps(body_dict)
-
-    pre_hash = timestamp + "POST" + PUBLIC_INFO_PATH_DARKEX + body_json
-    signature = hmac.new(
-        secret_key.encode("utf-8"),
-        pre_hash.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
-
-    headers = {
-        "Content-Type":    "application/json",
-        "X-CH-APIKEY":     api_key,
-        "X-CH-TS":         timestamp,
-        "X-CH-SIGN":       signature
-    }
-
-    logging.debug(f"Request headers: {headers}")
-    logging.debug(f"Request body: {body_json}")
-    
-
-    for attempt in range(3):  # 3 kez dene
-        try:
-            resp = requests.post(
-                FULL_PUBLIC_INFO_URL_DARKEX,
-                data=body_json,
-                headers=headers,
-                timeout=20  # Daha uzun timeout
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if not data.get("succ", False):
-                raise RuntimeError(f"public_info failed: {data}")
-            return data["data"].get("contractList", [])
-        except Exception as e:
-            logging.warning(f"[{attempt+1}/3] Darkex contractList çekme hatası: {e}")
-            time.sleep(2)
-
-    raise RuntimeError("Darkex contractList 3 kez denenmesine rağmen alınamadı.")
-
-def fetch_risk_limits_for(contract_id: int, api_key: str, secret_key: str) -> list[dict]:
-    """
-    Darkex’in /public_futures_contract_info endpoint’inden verilen contract_id için
-    leverMarginInfo listesini çeker. Debug printler kaldırıldı.
-    """
-    timestamp = str(int(time.time() * 1000))
-    body_dict = {"contractId": contract_id}
-    body_json = json.dumps(body_dict)
-
-    pre_hash = timestamp + "POST" + CONTRACT_INFO_PATH_DARKEX + body_json
-    signature = hmac.new(
-        secret_key.encode("utf-8"),
-        pre_hash.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
-
-    headers = {
-        "Content-Type":    "application/json",
-        "X-CH-APIKEY":     api_key,
-        "X-CH-TS":         timestamp,
-        "X-CH-SIGN":       signature
-    }
-
-    resp = requests.post(FULL_CONTRACT_INFO_URL_DARKEX, data=body_json, headers=headers, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data.get("succ", False):
-        raise RuntimeError(f"contract_info failed for {contract_id}: {data}")
-
-    info_list = data["data"].get("leverMarginInfo", None)
-    return info_list or []
-
-
-# ── NORMALIZATION HELPER ─────────────────────────────────────────────────────────
-def normalize_binance_pair(binance_pair: str) -> str:
-    """
-    1000PEPEUSDT gibi Binance pair’ini, başındaki sayısal öneki atarak normalize eder.
-    Örnek: "1000PEPEUSDT" → "PEPEUSDT"
-           "BTCUSDT"      → "BTCUSDT"  
-    """
-    return re.sub(r'^\d+', '', binance_pair.upper())
-
-
-def normalize_darkex_contract(cname: str) -> str:
-    """
-    Darkex contractName'i normalize eder. Örnekler:
-      - "1000BONK-USDT"        → ["1000BONK","USDT"] → birleştir → "1000BONKUSDT" → baştaki sayı sil → "BONKUSDT"
-      - "USDT1791-RDNT-USDT"   → ["USDT1791","RDNT","USDT"] → son iki → "RDNTUSDT"
-      - "BTC-USDT"             → ["BTC","USDT"] → birleştir → "BTCUSDT"
-      - Alt çizgi varsa önce tireyle eşitleyip devam eder.
-    """
-    cname = cname.strip().upper().replace("_", "-")
-    parts = cname.split("-")
-    if len(parts) >= 3:
-        base = parts[-2] + parts[-1]
-    else:
-        base = "".join(parts)
-    return re.sub(r'^\d+', '', base.upper())
-
-
-# ── TELEGRAM KOMUT İŞLEYİCİSİ ──────────────────────────────────────────────────────
-def get_updates(offset=None):
-    """
-    Telegram bot’un getUpdates endpoint’ine istek atar.
-    """
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    params = {'timeout': 100}
-    if offset:
-        params['offset'] = offset
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error getting updates: {e}")
-        return None
-
-def handle_commands(update):
-    if 'message' in update:
-        message = update['message']
-        text = message.get('text')
-        if text == '/create_excel':
-            logging.info("Komut alındı: /create_excel")
-            send_telegram("Komut algılandı, Excel hazırlanıyor..")
-
-            excel_path = None  # ← Önceden tanımlıyoruz
-            try:
-                excel_path = generate_risk_limit_excel()
-                send_document(excel_path)
-            except Exception as e:
-                logging.error(f"Excel oluşturulurken hata: {e}")
-                send_telegram(f"❌ Excel oluşturulamadı:\n`{e}`")
-            finally:
-                try:
-                    if excel_path and os.path.exists(excel_path):
-                        os.remove(excel_path)
-                        logging.info(f"Geçici dosya silindi: {excel_path}")
-                except Exception as e:
-                    logging.warning(f"Dosya silinirken hata: {e}")
-
-def poll_updates():
-    offset = None
-    while True:
-        try:
-            updates = get_updates(offset)
-            if updates and updates.get('result'):
-                for update in updates['result']:
-                    offset = update['update_id'] + 1
-                    handle_commands(update)
-        except Exception as e:
-            logging.error(f"poll_updates içinde hata oluştu: {e}")
-        time.sleep(1)
-
-# ── EXCEL ÜRETİMİ: Binance + Darkex Risk Limitlerini Tek Bir Dosyada Birleştir ──
-def generate_risk_limit_excel():
-    """
-    1) symbols.txt’ten sembolleri yükler  
-    2) Binance’dan risk limit tablolarını çeker  
-    3) Darkex’ten contractList’i alıp normalize eder  
-    4) Her pair için Darkex tier’larını çeker  
-    5) DataFrame’de “Exchange”, “Pair”, “Type”, “Tier1..Tier15”, “Risk1..Risk15” kolonlarını oluşturur  
-    6) Excel’e yazar; sayısal Tier hücreleri binlik ayraçlı (“#,##0”) görünür  
-    """
-    # 1) Tüm sembolleri oku
-    pairs = load_symbols(SYMBOLS_FILE)
-
-    # Binance normalize edilmiş hâli
-    normalized_binance = {pair: normalize_binance_pair(pair) for pair in pairs}
-
-    # 2) Binance verisini çek
-    all_binance = fetch_all_brackets_binance()
-    binance_map = {
-        entry['symbol']: entry['brackets']
-        for entry in all_binance
-        if entry['symbol'] in pairs
-    }
-
-    # 3) Darkex contractList’i çek, normalize edip map oluştur
-    all_contracts = fetch_all_contracts_darkex(API_KEY_DARKEX, API_SECRET_DARKEX)
-    contract_map = {
-        normalize_darkex_contract(entry.get("contractName")): entry.get("id")
-        for entry in all_contracts
-        if entry.get("contractName") and entry.get("id") is not None
-    }
-
-    # 4) Her Binance pair için Darkex tier’larını çek
-    darkex_map = {}
-    for pair, norm_bin in normalized_binance.items():
-        cid = contract_map.get(norm_bin)
-        if cid is not None:
-            d_tiers = fetch_risk_limits_for(cid, API_KEY_DARKEX, API_SECRET_DARKEX)
-            time.sleep(1.5)
-        else:
-            d_tiers = []
-        darkex_map[pair] = d_tiers
-
-    # 5) DataFrame’e eklemek üzere satırları hazırla
     rows = []
-    tier_columns = [f"Tier{i}" for i in range(1, 16)]
-    risk_columns = [f"Risk{i}" for i in range(1, 16)]
-
-    for pair in pairs:
-        # ○ Binance tarafı
-        b_tiers = binance_map.get(pair, [])
-        b_by_tier = {entry.get("bracket"): entry for entry in b_tiers if entry.get("bracket") is not None}
-
-        b_leverage = []
-        b_maint    = []
-        b_notional = []
-        for i in range(1, 16):
-            e = b_by_tier.get(i, {})
-            b_leverage.append(e.get("initialLeverage", ""))
-            mm = e.get("maintMarginRatio")
-            b_maint.append(f"{mm * 100:.2f}%" if mm is not None else "")
-            cap = e.get("notionalCap")
-            b_notional.append(cap if cap is not None else "")
-        # ○ Darkex tarafı
-        d_tiers = darkex_map.get(pair, [])
-        d_by_tier = {}
-        for entry in d_tiers:
-            lvl = entry.get("level")
-            if lvl is not None:
-                try:
-                    lvl_int = int(lvl)
-                except:
-                    continue
-                d_by_tier[lvl_int] = entry
-
-        d_leverage = []
-        d_maint    = []
-        d_notional = []
-        for i in range(1, 16):
-            e = d_by_tier.get(i, {})
-            ml = e.get("maxLever", "")
-            if isinstance(ml, str) and ml.endswith("x"):
-                try:
-                    ml_num = int(ml[:-1])
-                except:
-                    ml_num = ""
-            else:
-                try:
-                    ml_num = int(ml)
-                except:
-                    ml_num = ""
-            d_leverage.append(ml_num)
-
-            mmr = e.get("minMarginRate", "")
-            if isinstance(mmr, str) and mmr.endswith("%"):
-                d_maint.append(mmr)
-            else:
-                d_maint.append("")
-
-            mpv = e.get("maxPositionValue", "")
-            if isinstance(mpv, str):
-                try:
-                    mpv_int = int(mpv)
-                except:
-                    mpv_int = ""
-            else:
-                mpv_int = mpv
-            d_notional.append(mpv_int)
-
-        # ○ Risk hesaplaması (sadece Binance – Leverage satırı için)
-        risk_values = []
-        for i in range(1, 16):
-            b_val = b_leverage[i-1]
-            d_val = d_leverage[i-1]
-            try:
-                b_num = float(b_val) if b_val not in ("", None) else None
-            except:
-                b_num = None
-            try:
-                d_num = float(d_val) if d_val not in ("", None) else None
-            except:
-                d_num = None
-
-            if b_num is None or d_num is None:
-                risk_values.append("")
-            else:
-                if d_num > b_num:
-                    risk_values.append("Yüksek")
-                elif d_num < b_num:
-                    risk_values.append("Düşük")
-                else:
-                    risk_values.append("Eşit")
-
-        # Satırları ekle
-        rows.append({
-            "Exchange": "Binance",
-            "Pair":     pair,
-            "Type":     "Leverage",
-            **{f"Tier{i}": b_leverage[i-1] for i in range(1, 16)},
-            **{f"Risk{i}":  risk_values[i-1]     for i in range(1, 16)}
-        })
-        rows.append({
-            "Exchange": "Binance",
-            "Pair":     pair,
-            "Type":     "Maintenance Margin",
-            **{f"Tier{i}": b_maint[i-1] for i in range(1, 16)},
-            **{f"Risk{i}":  ""           for i in range(1, 16)}
-        })
-        rows.append({  
-            "Exchange": "Binance",
-            "Pair":     pair,
-            "Type":     "Max Value USDT",
-            **{f"Tier{i}": b_notional[i-1] for i in range(1, 16)},
-            **{f"Risk{i}":  ""             for i in range(1, 16)}
-        })
-
-        rows.append({
-            "Exchange": "Darkex",
-            "Pair":     pair,
-            "Type":     "Leverage",
-            **{f"Tier{i}": d_leverage[i-1] for i in range(1, 16)},
-            **{f"Risk{i}":  ""            for i in range(1, 16)}
-        })
-        rows.append({
-            "Exchange": "Darkex",
-            "Pair":     pair,
-            "Type":     "Maintenance Margin",
-            **{f"Tier{i}": d_maint[i-1] for i in range(1, 16)},
-            **{f"Risk{i}":  ""           for i in range(1, 16)}
-        })
-        rows.append({
-            "Exchange": "Darkex",
-            "Pair":     pair,
-            "Type":     "Max Value USDT",
-            **{f"Tier{i}": d_notional[i-1] for i in range(1, 16)},
-            **{f"Risk{i}":  ""            for i in range(1, 16)}
-        })
-
-    # 6) DataFrame oluştur ve sütun sırasını ayarla
-    all_columns = ["Exchange", "Pair", "Type"] + tier_columns + risk_columns
-    df = pd.DataFrame(rows, columns=all_columns)
-
-    # 7) Excel’e yaz fakat binlik ayraçlı format uygula
-    now = datetime.now(TZ).strftime('%H%M%S_%d-%m-%Y') 
-    filename = f"risk_limits_{now}.xlsx"
-    full_path = os.path.join(OUTPUT_DIR, filename)
-
-    # openpyxl kullanarak yazıyoruz
-    with pd.ExcelWriter(full_path, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='RiskLimits', index=False, startrow=0, header=True)
-        workbook  = writer.book
-        worksheet = writer.sheets['RiskLimits']
-
-        # Hücre kenarlıkları için
-        from openpyxl.styles import Border, Side, numbers
-
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-
-        # Binlik ayraç formatı uygulanan sütunlar: Tier1..Tier15
-        # Başlık satırı = 1; veri  satırları = 2.. (len(df)+1)
-        for row_idx in range(2, 2 + len(df)):
-            for col_idx in range(4, 4 + len(tier_columns)):
-                cell = worksheet.cell(row=row_idx, column=col_idx)
-                value = cell.value
-                if isinstance(value, (int, float)):
-                    cell.number_format = '#,##0'
-                elif isinstance(value, str) and value.endswith('%'):
-                    try:
-                        # Yüzde veriyi float’a çevir
-                        percent_val = float(value.strip('%')) / 100
-                        cell.value = percent_val
-                        cell.number_format = '0.00%'
-                    except:
-                        pass
-                cell.border = thin_border
-
-        # Risk sütunlarına da basit kenarlık ekle
-        for row_idx in range(2, 2 + len(df)):
-            for col_idx in range(4 + len(tier_columns), 4 + len(tier_columns) + len(risk_columns)):
-                cell = worksheet.cell(row=row_idx, column=col_idx)
-                cell.border = thin_border
-
-    logging.info(f"Excel dosyası oluşturuldu: {full_path}")
-    return full_path
+    for c in (data or {}).get("contractList", []):
+        sym = normalize_symbol(c)
+        cid = c.get("id")
+        if sym and cid is not None:
+            rows.append((sym, cid))
+    return sorted(rows, key=lambda x: x[0])
 
 
-# ── PROGRAMIN GİRİŞ NOKTASI ───────────────────────────────────────────────────────
-if __name__ == "__main__":
+def get_desktop_path() -> Path:
     """
-    1) Başlangıçta bir kez “bot aktif, saat başı kontroller planlandı” mesajı gönder.
-    2) Telegram komutlarını dinlemeye başlamak için poll_updates() ayrı bir thread’de çalıştır.
-    3) APScheduler cron trigger ile her saat başı check_and_notify()’u çalıştır.
+    Kullanıcının Masaüstü klasörünün yolunu döndürür.
+    - Varsayılan: ~ / Desktop
+    - Windows'ta özel konumlandırma varsa kayıt defterinden okumayı dener.
+    - Masaüstü mevcut değilse ev dizinine döner.
     """
+    home = Path.home()
+    desktop = home / "Desktop"
+    if desktop.exists():
+        return desktop
 
-    # Bot başladığında log
-    logging.info("Bot başlatıldı.")
-
-    # 1) Başlangıç bildirimi (sadece bir kez)
-    startup_now = datetime.now(TZ)
-    startup_msg = (
-        f"⚙️ *Risk Limit Kontrol Botu Aktif*\n\n"
-        f"⏱️ Saat başı kontroller planlandı.\n"
-        f"⏱️ Başlangıç: {startup_now.strftime('%H:%M:%S %d-%m-%Y')} (UTC+2)"
-    )
     try:
-        send_telegram(startup_msg)
-        time.sleep(1)
+        if os.name == "nt":
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+            ) as key:
+                desktop_dir = winreg.QueryValueEx(key, "Desktop")[0]
+                p = Path(desktop_dir)
+                if p.exists():
+                    return p
     except Exception:
         pass
 
-    # 2) Telegram komutlarını asenkron dinlemek için ayrı bir daemon thread başlat
-    polling_thread = threading.Thread(target=poll_updates, daemon=True)
-    polling_thread.start()
+    return home
 
-    # 3) Scheduler’ı oluştur ve cron trigger ayarla (her saat başı)
-    scheduler = BlockingScheduler(timezone="Europe/Tirane")
-    trigger = CronTrigger(hour='*', minute=0, second=0, timezone=TZ)
 
-    scheduler.add_job(
-        func=check_and_notify,
-        trigger=trigger,
-        id='risk_limit_job',
-        replace_existing=True,
-        misfire_grace_time=300  # Kaçırılan job’lar en fazla 5 dk içinde çalışsın
-    )
+def save_to_excel(rows, filepath: Path):
+    """
+    (symbol, contract_id) satırlarını tek sayfalık bir Excel dosyasına yazar.
+    Başlıkları kalın yapar, sütun genişliklerini içerik uzunluğuna göre ayarlar.
+    """
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Contracts"
+
+    headers = ["SYMBOL", "CONTRACT_ID"]
+    header_font = Font(bold=True)
+    left_align = Alignment(horizontal="left")
+
+    ws.cell(row=1, column=1, value=headers[0]).font = header_font
+    ws.cell(row=1, column=2, value=headers[1]).font = header_font
+
+    r = 2
+    for sym, cid in rows:
+        ws.cell(row=r, column=1, value=str(sym)).alignment = left_align
+        ws.cell(row=r, column=2, value=cid)
+        r += 1
+
+    max_len_symbol = max(len("SYMBOL"), *(len(str(s)) for s, _ in rows)) if rows else len("SYMBOL")
+    max_len_id = max(len("CONTRACT_ID"), *(len(str(cid)) for _, cid in rows)) if rows else len("CONTRACT_ID")
+
+    ws.column_dimensions["A"].width = max_len_symbol + 2
+    ws.column_dimensions["B"].width = max_len_id + 2
+    ws.freeze_panes = "A2"
+
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(str(filepath))
+
+
+# ---------------------------
+# Darkex Tier çekme ve yazdırma
+# ---------------------------
+def build_referer_for_contract(cid: int) -> str:
+    return f"https://www.darkex.com/en_US/futures/futuresData?marginCoin=USDT&type=1&contractId={cid}"
+
+
+def find_contract_mapping_file() -> Path | None:
+    """
+    contract_id_mapping.xlsx dosyasını önce çalışma dizininde, sonra Masaüstünde arar.
+    Bulamazsa None döner.
+    """
+    cwd = Path.cwd() / "contract_id_mapping.xlsx"
+    if cwd.exists():
+        return cwd
+    desktop = get_desktop_path() / "contract_id_mapping.xlsx"
+    if desktop.exists():
+        return desktop
+    return None
+
+
+def load_contract_ids_from_excel(filepath: Path):
+    """
+    contract_id_mapping.xlsx dosyasından (SYMBOL, CONTRACT_ID) listesi okur.
+    """
+    try:
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+    except Exception as e:
+        print(f"Excel okuma hatası ({filepath}): {e}", file=sys.stderr)
+        sys.exit(4)
+
+    ws = wb.active
+    headers = [str(cell.value).strip() if cell.value is not None else "" for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    header_map = {h.lower(): idx for idx, h in enumerate(headers)}
+    sym_idx = header_map.get("symbol")
+    cid_idx = header_map.get("contract_id")
+    if cid_idx is None:
+        wb.close()
+        print("Excel'de 'CONTRACT_ID' sütunu bulunamadı.", file=sys.stderr)
+        sys.exit(5)
+
+    rows = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        sym = row[sym_idx] if sym_idx is not None else ""
+        cid = row[cid_idx]
+        if cid is None:
+            continue
+        try:
+            cid_int = int(str(cid).split(".")[0].strip())
+        except Exception:
+            continue
+        sym_str = str(sym).strip() if sym is not None else ""
+        rows.append((sym_str, cid_int))
+
+    wb.close()
+    return rows
+
+
+def fetch_tier_info(session: requests.Session, contract_id: int):
+    """
+    Darkex: Belirli CONTRACT_ID için tier listesi.
+    """
+    ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = {"contractId": contract_id, "uaTime": ua_time}
+
+    hdr = dict(HEADERS)
+    hdr["referer"] = build_referer_for_contract(contract_id)
 
     try:
-        logging.info("Scheduler çalıştırılıyor.")
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Scheduler durduruldu.")
-        pass
+        r = session.post(TIER_URL, json=payload, headers=hdr, timeout=20)
+        r.raise_for_status()
+        j = r.json()
+    except Exception as e:
+        return {"ok": False, "error": f"istek/parse hatası: {e}", "contract_id": contract_id}
+
+    if j.get("code") == "0":
+        data = j.get("data", {}) or {}
+        return {
+            "ok": True,
+            "contract_id": contract_id,
+            "leverMarginInfo": data.get("leverMarginInfo", []) or [],
+            "coinAlias": data.get("coinAlias"),
+            "mTime": data.get("mTime"),
+        }
+    else:
+        return {"ok": False, "error": f"API hata cevabı: {j}", "contract_id": contract_id}
+
+
+def format_mtime(ms_value) -> str:
+    try:
+        ms_int = int(str(ms_value))
+        dt = datetime.fromtimestamp(ms_int / 1000.0)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def print_tier_block(symbol: str, contract_id, result: dict):
+    """
+    Tek bir sembol/kontrat için tier listesini terminale alt alta yazdırır.
+    contract_id Darkex için int, Binance için 'BINANCE' gibi string olabilir.
+    """
+    header_line = f"{symbol}  (CONTRACT_ID={contract_id})" if symbol else f"(CONTRACT_ID={contract_id})"
+    print(header_line)
+    if not result or not result.get("ok"):
+        err = (result or {}).get("error", "tier verisi alınamadı")
+        print(f"  Hata: {err}")
+        print("-" * 48)
+        return
+
+    tiers = result.get("leverMarginInfo", []) or []
+    coin_alias = result.get("coinAlias")
+    mtime_str = format_mtime(result.get("mTime"))
+    if coin_alias:
+        print(f"  Margin Coin: {coin_alias}")
+    if mtime_str:
+        print(f"  mTime: {mtime_str}")
+
+    if not tiers:
+        print("  Tier verisi yok.")
+        print("-" * 48)
+        return
+
+    print("  level | maxLever | minPositionValue | maxPositionValue | minMarginRate")
+    for t in tiers:
+        level = t.get("level")
+        maxLever = t.get("maxLever")
+        minPos = t.get("minPositionValue")
+        maxPos = t.get("maxPositionValue")
+        minRate = t.get("minMarginRate")
+        print(f"  {str(level):>5} | {str(maxLever):>8} | {str(minPos):>16} | {str(maxPos):>16} | {str(minRate):>12}")
+    print("-" * 48)
+
+
+def batch_fetch_and_print_tiers(rows):
+    """
+    Darkex: Çoklu CONTRACT_ID için eşzamanlı istek ve yazdırma.
+    """
+    max_workers = min(12, max(4, (os.cpu_count() or 4) * 2))
+    with requests.Session() as session:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = [(sym, cid, ex.submit(fetch_tier_info, session, cid)) for sym, cid in rows]
+            for sym, cid, fut in futures:
+                res = None
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    res = {"ok": False, "error": f"future/unknown: {e}", "contract_id": cid}
+                print_tier_block(sym, cid, res)
+
+
+# ---------------------------
+# Binance risk limit (tier) çekme ve yazdırma
+# ---------------------------
+def fetch_all_brackets_binance(session: requests.Session):
+    """
+    Binance USDⓈ-M Futures: Tüm semboller için risk limit tablolarını çeker.
+    """
+    ts = str(int(time.time() * 1000))
+    qs = f"timestamp={ts}&recvWindow=5000"
+    signature = hmac.new(API_SECRET_BINANCE.encode(), qs.encode(), hashlib.sha256).hexdigest()
+    url = f"{BASE_URL_BINANCE}{ENDPOINT_BINANCE}?{qs}&signature={signature}"
+    headers = {"X-MBX-APIKEY": API_KEY_BINANCE}
+
+    resp = session.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    return resp.json()  # list[ {symbol, brackets:[...]} ]
+
+
+def binance_brackets_to_tiers_entry(entry: dict):
+    """
+    Binance 'brackets' girdisini (symbol için) Darkex formatına dönüştürür.
+    """
+    tiers = []
+    for br in entry.get("brackets", []):
+        level = br.get("bracket")
+        lev = br.get("initialLeverage")
+        max_lever = f"{int(lev)}x" if lev is not None else ""
+        # notional tercih, yoksa qty:
+        min_pos = br.get("notionalFloor", br.get("qtyFloor"))
+        max_pos = br.get("notionalCap", br.get("qtyCap"))
+        mmr = br.get("maintMarginRatio")
+        if mmr is not None:
+            try:
+                min_rate = f"{float(mmr) * 100:.2f}%"
+            except Exception:
+                min_rate = str(mmr)
+        else:
+            min_rate = ""
+
+        tiers.append({
+            "level": str(level) if level is not None else "",
+            "maxLever": max_lever,
+            "minPositionValue": str(min_pos) if min_pos is not None else "",
+            "maxPositionValue": str(max_pos) if max_pos is not None else "",
+            "minMarginRate": min_rate,
+        })
+    return tiers
+
+
+def unique_symbols_in_order(rows):
+    """
+    rows: [(symbol, contract_id)] -> list of unique symbols preserving order.
+    """
+    seen = set()
+    out = []
+    for sym, _ in rows:
+        s = str(sym).strip()
+        if not s:
+            continue
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def print_binance_tiers_for_symbols(symbols):
+    """
+    Binance: Veriyi tek çağrıda alır, istenen semboller için Darkex ile aynı
+    tablo formatında (kolon adları ve hizalama) terminale yazar.
+    """
+    with requests.Session() as session:
+        try:
+            all_data = fetch_all_brackets_binance(session)
+        except Exception as e:
+            print(f"Binance risk limit verisi alınamadı: {e}", file=sys.stderr)
+            return
+
+    # symbol -> entry map
+    by_symbol = {}
+    for item in all_data or []:
+        sym = item.get("symbol")
+        if sym:
+            by_symbol[sym] = item
+
+    for sym in symbols:
+        entry = by_symbol.get(sym)
+        if not entry:
+            print_tier_block(sym, "BINANCE", {"ok": False, "error": "Sembol bulunamadı"})
+            continue
+
+        tiers = binance_brackets_to_tiers_entry(entry)
+        # USDT çiftleri için Margin Coin'i yazdırmak isterseniz:
+        coin_alias = "USDT" if sym.endswith("USDT") else None
+        result = {"ok": True, "leverMarginInfo": tiers}
+        if coin_alias:
+            result["coinAlias"] = coin_alias
+
+        print_tier_block(sym, "BINANCE", result)
+
+
+# ---------------------------
+# main
+# ---------------------------
+def main():
+    # 1) contract_id_mapping.xlsx varsa: Darkex tier -> ardından Binance tier yazdır.
+    mapping_file = find_contract_mapping_file()
+    if mapping_file is not None:
+        rows = load_contract_ids_from_excel(mapping_file)
+        if not rows:
+            print(f"{mapping_file} içinde işlenecek satır bulunamadı.", file=sys.stderr)
+            sys.exit(6)
+
+        # Darkex
+        batch_fetch_and_print_tiers(rows)
+
+        # Binance (aynı semboller)
+        symbols = unique_symbols_in_order(rows)
+        if symbols:
+            # Araya boş satır
+            print()
+            print_binance_tiers_for_symbols(symbols)
+        return
+
+    # 2) Aksi halde: public_info -> Excel'e yaz ve Masaüstüne kaydet (mevcut davranış korunur)
+    ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = {"uaTime": ua_time}
+
+    try:
+        r = requests.post(URL, json=payload, headers=HEADERS, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(f"İstek hatası: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if data.get("code") != "0":
+        print(f"API hata cevabı: {data}", file=sys.stderr)
+        sys.exit(2)
+
+    payload_data = data.get("data", {})
+    rows = extract_symbol_id(payload_data)
+
+    desktop = get_desktop_path()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"darkex_symbol_contracts_{timestamp}.xlsx"
+    save_path = desktop / filename
+
+    try:
+        save_to_excel(rows, save_path)
+    except Exception as e:
+        print(f"Excel yazma/kaydetme hatası: {e}", file=sys.stderr)
+        sys.exit(3)
+
+    print(f"{len(rows)} satır Excel dosyasına yazıldı ve kaydedildi: {save_path}")
+
+
+if __name__ == "__main__":
+    main()
