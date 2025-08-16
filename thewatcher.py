@@ -491,14 +491,14 @@ def main():
         # Binance (aynı semboller)
         symbols = unique_symbols_in_order(rows)
         if symbols:
-            # Araya boş satır
             print()
             print_binance_tiers_for_symbols(symbols)
 
-    else:
-        # 2) Aksi halde: public_info -> Excel'e yaz ve Masaüstüne kaydet (mevcut davranış korunur)
-        ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        payload = {"uaTime": ua_time}
+        return   # ← Excel varsa buradan çıkıyoruz, payload’a hiç girmiyoruz
+
+    # 2) Excel yoksa: public_info -> Excel'e yaz ve Masaüstüne kaydet
+    ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = {"uaTime": ua_time}
 
     try:
         r = requests.post(URL, json=payload, headers=HEADERS, timeout=20)
@@ -509,8 +509,8 @@ def main():
         sys.exit(1)
 
     if data.get("code") != "0":
-            print(f"API hata cevabı: {data}", file=sys.stderr)
-            sys.exit(2)
+        print(f"API hata cevabı: {data}", file=sys.stderr)
+        sys.exit(2)
 
     payload_data = data.get("data", {})
     rows = extract_symbol_id(payload_data)
@@ -522,13 +522,18 @@ def main():
 
     try:
         save_to_excel(rows, save_path)
+        print(f"{len(rows)} satır Excel dosyasına yazıldı ve kaydedildi: {save_path}")
     except Exception as e:
         print(f"Excel yazma/kaydetme hatası: {e}", file=sys.stderr)
         sys.exit(3)
 
-        print(f"{len(rows)} satır Excel dosyasına yazıldı ve kaydedildi: {save_path}")
+    while True:
+        try:
+            check_binance_tiers()
+        except Exception as e:
+            print(f"Binance tier check failed: {e}", file=sys.stderr)
+        time.sleep(1800)
 
-    check_binance_tiers()
 
 
 if __name__ == "__main__":
