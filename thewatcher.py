@@ -9,6 +9,7 @@ import hmac
 import hashlib
 from pathlib import Path
 import requests
+import json
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from openpyxl import Workbook, load_workbook
@@ -55,6 +56,27 @@ API_SECRET_BINANCE = "FXIEwjfjYuYFyAfpFT9ud5gluG3OzsNd68Fj7iPeIeXa1T2na6PwWpMPvc
 
 BASE_URL_BINANCE = "https://fapi.binance.com"
 ENDPOINT_BINANCE = "/fapi/v1/leverageBracket"  # tüm semboller için risk limit
+
+# ---------------------------
+# Telegram ayarları
+# ---------------------------
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+TELEGRAM_THREAD_ID = "YOUR_THREAD_ID"
+
+
+def send_telegram_message(text: str):
+    """Telegram'a basit mesaj gönderimi."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "message_thread_id": TELEGRAM_THREAD_ID,
+        "text": text,
+    }
+    try:
+        requests.post(url, json=payload, timeout=10).raise_for_status()
+    except Exception as e:
+        print(f"Telegram mesajı gönderilemedi: {e}", file=sys.stderr)
 
 
 # ===========================
@@ -399,6 +421,57 @@ def print_binance_tiers_for_symbols(symbols):
 
         print_tier_block(sym, "BINANCE", result)
 
+def check_binance_tiers(filepath: str = "binance_tiers.json"):
+    """Binance risk limit değişikliklerini kontrol eder."""
+    old_data = {}
+    p = Path(filepath)
+    if p.exists():
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                old_data = json.load(f)
+        except Exception:
+            old_data = {}
+
+    with requests.Session() as session:
+        try:
+            all_data = fetch_all_brackets_binance(session)
+        except Exception as e:
+            print(f"Binance risk limit verisi alınamadı: {e}", file=sys.stderr)
+            return
+
+    new_data = {}
+    for item in all_data or []:
+        sym = item.get("symbol")
+        if sym:
+            new_data[sym] = binance_brackets_to_tiers_entry(item)
+
+    for sym, new_tiers in new_data.items():
+        old_tiers = old_data.get(sym)
+        if old_tiers != new_tiers:
+            now_str = datetime.now().strftime("%H:%M:%S")
+            lines = [f"{sym} {now_str}", "Eski Risk Limitleri:"]
+            if old_tiers:
+                lines.append("level | maxLever | minPositionValue | maxPositionValue | minMarginRate")
+                for t in old_tiers:
+                    lines.append(
+                        f"{t.get('level',''):>5} | {t.get('maxLever',''):>8} | {t.get('minPositionValue',''):>16} | {t.get('maxPositionValue',''):>16} | {t.get('minMarginRate',''):>12}"
+                    )
+            else:
+                lines.append("(veri yok)")
+            lines.append("Yeni Risk Limitleri:")
+            lines.append("level | maxLever | minPositionValue | maxPositionValue | minMarginRate")
+            for t in new_tiers:
+                lines.append(
+                    f"{t.get('level',''):>5} | {t.get('maxLever',''):>8} | {t.get('minPositionValue',''):>16} | {t.get('maxPositionValue',''):>16} | {t.get('minMarginRate',''):>12}"
+                )
+            send_telegram_message("\n".join(lines))
+
+    try:
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(new_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Binance risk limit verisi kaydedilemedi: {e}", file=sys.stderr)
+
 
 # ---------------------------
 # main
@@ -421,11 +494,11 @@ def main():
             # Araya boş satır
             print()
             print_binance_tiers_for_symbols(symbols)
-        return
 
-    # 2) Aksi halde: public_info -> Excel'e yaz ve Masaüstüne kaydet (mevcut davranış korunur)
-    ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    payload = {"uaTime": ua_time}
+    else:
+        # 2) Aksi halde: public_info -> Excel'e yaz ve Masaüstüne kaydet (mevcut davranış korunur)
+        ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        payload = {"uaTime": ua_time}
 
     try:
         r = requests.post(URL, json=payload, headers=HEADERS, timeout=20)
@@ -436,8 +509,8 @@ def main():
         sys.exit(1)
 
     if data.get("code") != "0":
-        print(f"API hata cevabı: {data}", file=sys.stderr)
-        sys.exit(2)
+            print(f"API hata cevabı: {data}", file=sys.stderr)
+            sys.exit(2)
 
     payload_data = data.get("data", {})
     rows = extract_symbol_id(payload_data)
@@ -453,7 +526,9 @@ def main():
         print(f"Excel yazma/kaydetme hatası: {e}", file=sys.stderr)
         sys.exit(3)
 
-    print(f"{len(rows)} satır Excel dosyasına yazıldı ve kaydedildi: {save_path}")
+        print(f"{len(rows)} satır Excel dosyasına yazıldı ve kaydedildi: {save_path}")
+
+    check_binance_tiers()
 
 
 if __name__ == "__main__":
