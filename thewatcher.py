@@ -44,6 +44,7 @@ HEADERS = {
     "sec-fetch-dest": "empty",
     "sec-fetch-mode": "cors",
     "sec-fetch-site": "same-origin",
+    "sign": "e3f588ee62640b6a68c77b6176179b5b",
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
     # uuid-cu varsa ekleyebilirsiniz: "uuid-cu": "..."
 }
@@ -78,6 +79,31 @@ def send_telegram_message(text: str):
         requests.post(url, json=payload, timeout=10).raise_for_status()
     except Exception as e:
         print(f"Telegram mesajı gönderilemedi: {e}", file=sys.stderr)
+
+def send_telegram_document(file_path: Path, caption: str = None):
+    """Telegram'a dosya (Excel) gönderir."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+    }
+    # Konu başlığı (forum/konu kullanan süpergruplar için)
+    if TELEGRAM_THREAD_ID:
+        data["message_thread_id"] = TELEGRAM_THREAD_ID
+    if caption:
+        data["caption"] = caption
+
+    # Excel MIME tipi
+    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    # Telegram’da düzgün görünsün diye okunur bir dosya adı veriyoruz
+    filename = "Guncel_darkex_tier_list.xlsx"
+
+    with open(file_path, "rb") as f:
+        files = {"document": (filename, f, mime)}
+        try:
+            requests.post(url, data=data, files=files, timeout=60).raise_for_status()
+        except Exception as e:
+            print(f"Telegram dosya gönderilemedi: {e}", file=sys.stderr)
+
 
 
 # ===========================
@@ -413,14 +439,31 @@ def save_tiers_to_excel(rows, filepath: Path):
 
 def handle_create_excel_command():
     """/create_excel komutunu işler."""
+    # Masaüstüne kaydetmek yerine Telegram'dan gönderiyoruz
     send_telegram_message("Darkex tier verileri toplanıyor...")
     try:
+        import tempfile  # sadece burada kullanıyoruz; global import gerekmez
         rows = fetch_all_tier_data()
-        save_path = get_desktop_path() / "Güncel_darkex_tier_list.xlsx"
-        save_tiers_to_excel(rows, save_path)
-        send_telegram_message("Excel dosyası oluşturuldu.")
+
+        # Geçici dosyaya yaz
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+            tmp_path = Path(tmp.name)
+
+        save_tiers_to_excel(rows, tmp_path)
+
+        # Telegram'a gönder
+        send_telegram_document(tmp_path, caption="Darkex tier listesi (güncel)")
+
+        # Temizle
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+        send_telegram_message("Excel dosyası Telegram'a gönderildi.")
     except Exception as e:
         send_telegram_message(f"Excel oluşturulamadı: {e}")
+
 
 
 def poll_telegram_commands():
