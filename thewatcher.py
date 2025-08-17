@@ -10,6 +10,7 @@ import hashlib
 from pathlib import Path
 import requests
 import json
+import threading
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from openpyxl import Workbook, load_workbook
@@ -321,6 +322,129 @@ def batch_fetch_and_print_tiers(rows):
                     res = {"ok": False, "error": f"future/unknown: {e}", "contract_id": cid}
                 print_tier_block(sym, cid, res)
 
+# ---------------------------
+# Excel oluşturma yardımcıları
+# ---------------------------
+def fetch_all_tier_data():
+    """Tüm sözleşmeler için tier verilerini çeker."""
+    ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = {"uaTime": ua_time}
+
+    r = requests.post(URL, json=payload, headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("code") != "0":
+        raise RuntimeError(f"API hata cevabı: {data}")
+
+    contracts = data.get("data", {}).get("contractList", []) or []
+    rows = []
+    with requests.Session() as session:
+        max_workers = min(12, max(4, (os.cpu_count() or 4) * 2))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = {}
+            for c in contracts:
+                cid = c.get("id")
+                if cid is None:
+                    continue
+                futs[ex.submit(fetch_tier_info, session, cid)] = (normalize_symbol(c), cid)
+
+            for fut, (sym, cid) in futs.items():
+                try:
+                    res = fut.result()
+                except Exception:
+                    continue
+                if res.get("ok"):
+                    for idx, t in enumerate(res.get("leverMarginInfo", []), start=1):
+                        rows.append(
+                            (
+                                sym,
+                                cid,
+                                idx,
+                                t.get("maxLever"),
+                                t.get("minPositionValue"),
+                                t.get("maxPositionValue"),
+                                t.get("minMarginRate"),
+                            )
+                        )
+    return rows
+
+
+def save_tiers_to_excel(rows, filepath: Path):
+    """Tier verilerini Excel dosyasına yazar."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Tiers"
+
+    headers = [
+        "SYMBOL",
+        "CONTRACT_ID",
+        "LEVEL",
+        "MAX_LEVER",
+        "MIN_POSITION_VALUE",
+        "MAX_POSITION_VALUE",
+        "MIN_MARGIN_RATE",
+    ]
+    header_font = Font(bold=True)
+    left_align = Alignment(horizontal="left")
+
+    for col, head in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=head)
+        cell.font = header_font
+        cell.alignment = left_align
+
+    for r_idx, row in enumerate(rows, start=2):
+        for c_idx, value in enumerate(row, start=1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=value)
+            cell.alignment = left_align
+
+    letters = ["A", "B", "C", "D", "E", "F", "G"]
+    for i, letter in enumerate(letters):
+        max_len = len(headers[i])
+        for row in rows:
+            v = row[i]
+            if v is not None:
+                max_len = max(max_len, len(str(v)))
+        ws.column_dimensions[letter].width = max_len + 2
+
+    ws.freeze_panes = "A2"
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(str(filepath))
+
+
+def handle_create_excel_command():
+    """/create_excel komutunu işler."""
+    send_telegram_message("Darkex tier verileri toplanıyor...")
+    try:
+        rows = fetch_all_tier_data()
+        save_path = get_desktop_path() / "Güncel_darkex_tier_list.xlsx"
+        save_tiers_to_excel(rows, save_path)
+        send_telegram_message("Excel dosyası oluşturuldu.")
+    except Exception as e:
+        send_telegram_message(f"Excel oluşturulamadı: {e}")
+
+
+def poll_telegram_commands():
+    """Telegram'dan komutları dinler."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    offset = None
+    while True:
+        params = {"timeout": 30}
+        if offset is not None:
+            params["offset"] = offset
+        try:
+            resp = requests.get(url, params=params, timeout=35)
+            resp.raise_for_status()
+            data = resp.json()
+            for upd in data.get("result", []):
+                offset = upd.get("update_id", 0) + 1
+                msg = upd.get("message", {})
+                text = (msg.get("text") or "").strip()
+                if text == "/create_excel":
+                    threading.Thread(target=handle_create_excel_command, daemon=True).start()
+        except Exception as e:
+            print(f"Polling error: {e}", file=sys.stderr)
+            time.sleep(5)
+
 
 # ---------------------------
 # Binance risk limit (tier) çekme ve yazdırma
@@ -530,6 +654,7 @@ def check_binance_tiers(filepath: str = "binance_tiers.json"):
 # ---------------------------
 def main():
     send_telegram_message("Bot başlatıldı")
+    threading.Thread(target=poll_telegram_commands, daemon=True).start()
     
     # 1) contract_id_mapping.xlsx varsa: Darkex tier -> ardından Binance tier yazdır.
     mapping_file = find_contract_mapping_file()
