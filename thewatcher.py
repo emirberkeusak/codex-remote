@@ -539,14 +539,10 @@ def main():
             print(f"{mapping_file} içinde işlenecek satır bulunamadı.", file=sys.stderr)
             sys.exit(6)
 
-        # Darkex
-        batch_fetch_and_print_tiers(rows)
-
         # Binance (aynı semboller)
         symbols = unique_symbols_in_order(rows)
         if symbols:
-            print()
-            print_binance_tiers_for_symbols(symbols)
+            pass
 
     else:
         # 2) Excel yoksa: public_info -> Excel'e yaz ve Masaüstüne kaydet
