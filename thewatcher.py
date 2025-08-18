@@ -308,7 +308,7 @@ class BaseWatcher:
 
         st = load_json_or(state_file, {"seen_ids": [], "seeded": False})
         self.seen_ids_file = state_file
-        self.seen_ids = set(st.get("seen_ids", []))
+        self.seen_ids = set(str(x) for x in st.get("seen_ids", []))
         self.seeded   = bool(st.get("seeded", False))
         self.logged_out = False
 
@@ -419,6 +419,31 @@ class BaseWatcher:
             if isinstance(arr, list):
                 return arr
         return []
+    
+    def _row_key(self, d: Dict[str, Any]) -> str | None:
+        """Kayıtları güvenle eşsizleştirmek için anahtar üret."""
+        # 1) txid varsa onu kullan
+        v = d.get("txid")
+        if v not in (None, "", "null"):
+            s = str(v).strip()
+            if s:
+                return s
+        # 2) id'yi string olarak kullan (int'e çevirmeyin)
+        v = d.get("id")
+        if v not in (None, "", "null"):
+            s = str(v).strip()
+            if s:
+                return s
+        # 3) yedek: uid + createdAt
+        uid = str(d.get("uid", "") or "").strip()
+        try:
+            ms = int(d.get("createdAt") or 0)
+        except Exception:
+            ms = 0
+        if uid or ms:
+            return f"{uid}:{ms}"
+        return None
+
 
     async def _handle_rows(self, body: Dict[str, Any]) -> None:
         data = body.get("data") or {}
@@ -427,31 +452,56 @@ class BaseWatcher:
             await self.tg.send(f"⚠️ {self.name}: Beklenen liste bulunamadı ({' / '.join(self.list_keys)}).")
             return
 
+        # --- SEED mantığı (başlangıç) ---
         if SEED_ON_START and not self.seeded:
+            now_ms = int(datetime.now().timestamp() * 1000)
+            cutoff_ms = now_ms - 2 * 60 * 1000  # son 2 dakika seed edilmez
+            seeded_n = 0
+            skip_new_n = 0
             for d in items:
-                try:
-                    self.seen_ids.add(int(d.get("id")))
-                except Exception:
+                key = self._row_key(d)
+                if not key:
                     continue
+                try:
+                    created = int(d.get("createdAt") or 0)
+                except Exception:
+                    created = 0
+                if created and created > cutoff_ms:
+                    # bunlar 'yeni' sayılacak ve bildirim gitsin
+                    skip_new_n += 1
+                    continue
+                self.seen_ids.add(key)
+                seeded_n += 1
             self.seeded = True
             save_json(self.seen_ids_file, {"seen_ids": sorted(self.seen_ids), "seeded": True})
-            await self.tg.send(f"ℹ️ {self.name}: İlk yükleme — mevcut kayıtlar baz alındı (bildirim yok).")
+            await self.tg.send(
+                f"ℹ️ {self.name}: İlk yükleme — {seeded_n} eski kayıt seedlendi; "
+                f"son 2 dk içindeki {skip_new_n} kayıt bildirilecek."
+            )
             return
 
+        # --- Yeni kayıt tespiti (txid/id/uid:createdAt ile) ---
         new_items = []
+        skipped_bad_key = 0
         for d in items:
-            try:
-                did = int(d.get("id"))
-            except Exception:
+            key = self._row_key(d)
+            if not key:
+                skipped_bad_key += 1
                 continue
-            if did not in self.seen_ids:
+            if key not in self.seen_ids:
                 new_items.append(d)
-                self.seen_ids.add(did)
+                self.seen_ids.add(key)
+
+        if skipped_bad_key:
+            print(f"[{self.name}] {skipped_bad_key} kayıt, anahtar üretilemediği için atlandı.")
 
         if not new_items:
             return
 
+        # Zaman sırasına diz
         new_items.sort(key=lambda x: x.get("createdAt", 0))
+
+        # Bildirimleri gönder
         for d in new_items:
             uid = str(d.get("uid", "") or "")
             cc = "—"
@@ -482,9 +532,11 @@ class BaseWatcher:
             msg = f"{msg}\ncountryCode: {cc}"
             await self.tg.send(msg)
 
+        # State'i küçült ve kaydet
         if len(self.seen_ids) > 5000:
             self.seen_ids = set(list(self.seen_ids)[-3000:])
         save_json(self.seen_ids_file, {"seen_ids": sorted(self.seen_ids), "seeded": self.seeded})
+
 
     async def run(self, session: aiohttp.ClientSession, tg: Telegram):
         self.session = session
