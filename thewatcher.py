@@ -4,6 +4,31 @@ from typing import Any, Dict, Tuple, Optional, List, Set
 from urllib.parse import urlparse
 from pathlib import Path
 
+# === FIX: durum metnini normalize et ve eşanlamlıları birleştir
+def _normalize_status(value):
+    if value is None:
+        return ""
+    s = str(value)
+    # fazla boşlukları tek boşluğa indir, kırp, küçük harfe çevir
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    # yaygın eşanlamlıları "completed" altında topla
+    aliases = {
+        "complete": "completed",
+        "completed": "completed",
+        "success": "completed",
+        "successful": "completed",
+        "succeeded": "completed",
+        "done": "completed",
+        "finished": "completed",
+        "ok": "completed",
+        "confirmed": "completed",
+        "confirm": "completed",
+        # olası yerelleştirmeler
+        "已完成": "completed", "完成": "completed", "成功": "completed",
+    }
+    return aliases.get(s, s)
+
+
 # ====== Telegram ayarları ======
 TELEGRAM_BOT_TOKEN = "7895901821:AAEJs3mmWxiWrRyVKcRiAxMN2Rn4IpiyV0o"
 TELEGRAM_CHAT_ID   = "-4678220102"
@@ -296,6 +321,9 @@ class BaseWatcher:
         country_map: CountryMap,
         status_field: Optional[str] = None,
         allowed_statuses: Optional[List[str]] = None,
+        # === FIX: çoklu alan ve fallback desteği
+        status_fields: Optional[List[str]] = None,
+        treat_txid_as_completed_when_status_missing: bool = False,
     ):
         self.name = name
         self.api_fw     = FileWatcher(api_url_file,   normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
@@ -324,9 +352,21 @@ class BaseWatcher:
         self.country_map = country_map
 
         self.status_field = status_field
+
+        # === FIX: çoklu durum alanı desteği
+        self.status_fields: List[str] = []
+        if status_fields:
+            self.status_fields = [f for f in status_fields if f]
+        elif status_field:
+            self.status_fields = [status_field]
+
+        # === FIX: izinli durumları normalize ederek sakla
         self.allowed_statuses: Optional[Set[str]] = (
-            {str(s).lower() for s in allowed_statuses} if allowed_statuses else None
+            {_normalize_status(s) for s in allowed_statuses} if allowed_statuses else None
         )
+
+        # === FIX: durum alanı yoksa txid+coinTxUrl ile tamamlandı say
+        self.treat_txid_as_completed = bool(treat_txid_as_completed_when_status_missing)
 
         self.session: Optional[aiohttp.ClientSession] = None
         self.tg: Optional[Telegram] = None
@@ -451,6 +491,41 @@ class BaseWatcher:
             return f"{uid}:{ms}"
         return None
 
+        # === FIX: kayıttan durum metnini çıkar
+    def _status_text(self, d: Dict[str, Any]) -> Optional[str]:
+        # Önce kullanıcı tarafından verilen alanları dene
+        for f in self.status_fields:
+            val = d.get(f)
+            if val not in (None, "", "null"):
+                st = _normalize_status(val)
+                if st:
+                    return st
+        # Bilinen alternatifleri sırayla dene (API sürüm farkları için güvenlik ağı)
+        for f in ("statusDesc", "depositStatusDesc", "depositStatus", "status",
+          "stateDesc", "state", "orderStatusDesc", "orderStatus"):
+            if f in self.status_fields:
+                continue
+            val = d.get(f)
+            if val not in (None, "", "null"):
+                st = _normalize_status(val)
+                if st:
+                    return st
+        return None
+
+    # === FIX: bu satır bildirim kriterini sağlıyor mu?
+    def _is_allowed_row(self, d: Dict[str, Any]) -> bool:
+        if self.allowed_statuses is None:
+            return True
+        st = self._status_text(d)
+        if st is not None:
+            return st in self.allowed_statuses
+        # Durum yoksa fakat txid+coinTxUrl varsa tamamlandı kabul et (deposit için)
+        if self.treat_txid_as_completed:
+            txid = str(d.get("txid") or "").strip()
+            link = str(d.get("coinTxUrl") or "").strip()
+            if txid and link:
+                return True
+        return False
 
     async def _handle_rows(self, body: Dict[str, Any]) -> None:
         data = body.get("data") or {}
@@ -469,10 +544,9 @@ class BaseWatcher:
                 key = self._row_key(d)
                 if not key:
                     continue
-                if self.status_field and self.allowed_statuses is not None:
-                    status_val = str(d.get(self.status_field) or "").lower()
-                    if status_val not in self.allowed_statuses:
-                        continue
+                # === FIX: normalize ve çoklu alanla filtrele
+                if not self._is_allowed_row(d):
+                    continue
                 try:
                     created = int(d.get("createdAt") or 0)
                 except Exception:
@@ -499,10 +573,9 @@ class BaseWatcher:
             if not key:
                 skipped_bad_key += 1
                 continue
-            if self.status_field and self.allowed_statuses is not None:
-                status_val = str(d.get(self.status_field) or "").lower()
-                if status_val not in self.allowed_statuses:
-                    continue
+            # === FIX: normalize ve çoklu alanla filtrele
+            if not self._is_allowed_row(d):
+                continue
             if key not in self.seen_ids:
                 new_items.append(d)
                 self.seen_ids.add(key)
@@ -654,7 +727,14 @@ def make_deposit_message(d: Dict[str, Any], emoji: str, title: str) -> str:
     usdt_amount = str(d.get("usdtAmount", ""))
     uid = str(d.get("uid", ""))
     amount = str(d.get("amount", ""))
-    status_desc = str(d.get("statusDesc", d.get("walletStatus", "")))
+    status_desc = str(
+        d.get("statusDesc")
+        or d.get("depositStatusDesc")
+        or d.get("depositStatus")
+        or d.get("status")
+        or d.get("walletStatus")  # sadece gösterim, filtrede kullanılmıyor
+        or ""
+    )
     txid = str(d.get("txid", ""))
 
     lines = [
@@ -688,6 +768,7 @@ def make_withdraw_message(d: Dict[str, Any], emoji: str, title: str) -> str:
     txid = str(d.get("txid", ""))
 
     lines = [
+        f"{emoji} {title}",
         f"SYMBOL: {symbol}",
         f"USDTAMOUNT: {usdt_amount}",
         f"UID: {uid}",
@@ -725,9 +806,13 @@ async def main():
             cc_page_fw=cc_page_fw,
             cc_api_fw=cc_api_fw,
             country_map=country_map,
-            status_field="statusDesc",
-            allowed_statuses=["completed"],
-        )
+
+            # === FIX: birden fazla alan adı dene + eşanlamlılar
+            status_fields=["statusDesc", "depositStatusDesc", "depositStatus", "status"],
+            allowed_statuses=["completed", "success", "successful", "succeeded", "confirmed"],
+            treat_txid_as_completed_when_status_missing=True,
+            )
+
 
         withdraw = BaseWatcher(
             name="Withdraw",
@@ -743,14 +828,17 @@ async def main():
             cc_page_fw=cc_page_fw,
             cc_api_fw=cc_api_fw,
             country_map=country_map,
-            status_field="statusDesc",
+
+            # withdraw tarafında tek alan yeterli
+            status_fields=["statusDesc"],
             allowed_statuses=["completed"],
         )
 
+
         await asyncio.gather(
-            deposit.run(session, tg),
-            withdraw.run(session, tg),
-        )
+                deposit.run(session, tg),
+                withdraw.run(session, tg),
+            )
 
 if __name__ == "__main__":
     asyncio.run(main())
