@@ -1,6 +1,6 @@
 import asyncio, aiohttp, json, re, csv
 from datetime import datetime
-from typing import Any, Dict, Tuple, Optional, List
+from typing import Any, Dict, Tuple, Optional, List, Set
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -294,6 +294,8 @@ class BaseWatcher:
         cc_page_fw: FileWatcher,
         cc_api_fw: FileWatcher,
         country_map: CountryMap,
+        status_field: Optional[str] = None,
+        allowed_statuses: Optional[List[str]] = None,
     ):
         self.name = name
         self.api_fw     = FileWatcher(api_url_file,   normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
@@ -320,6 +322,11 @@ class BaseWatcher:
         self.cc_page_fw = cc_page_fw
         self.cc_api_fw  = cc_api_fw
         self.country_map = country_map
+
+        self.status_field = status_field
+        self.allowed_statuses: Optional[Set[str]] = (
+            {str(s).lower() for s in allowed_statuses} if allowed_statuses else None
+        )
 
         self.session: Optional[aiohttp.ClientSession] = None
         self.tg: Optional[Telegram] = None
@@ -462,6 +469,10 @@ class BaseWatcher:
                 key = self._row_key(d)
                 if not key:
                     continue
+                if self.status_field and self.allowed_statuses is not None:
+                    status_val = str(d.get(self.status_field) or "").lower()
+                    if status_val not in self.allowed_statuses:
+                        continue
                 try:
                     created = int(d.get("createdAt") or 0)
                 except Exception:
@@ -488,6 +499,10 @@ class BaseWatcher:
             if not key:
                 skipped_bad_key += 1
                 continue
+            if self.status_field and self.allowed_statuses is not None:
+                status_val = str(d.get(self.status_field) or "").lower()
+                if status_val not in self.allowed_statuses:
+                    continue
             if key not in self.seen_ids:
                 new_items.append(d)
                 self.seen_ids.add(key)
@@ -733,6 +748,8 @@ async def main():
             cc_page_fw=cc_page_fw,
             cc_api_fw=cc_api_fw,
             country_map=country_map,
+            status_field="statusDesc",
+            allowed_statuses=["completed"],
         )
 
         await asyncio.gather(
