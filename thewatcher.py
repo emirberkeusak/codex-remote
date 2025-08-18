@@ -732,6 +732,8 @@ async def main():
             cc_page_fw=cc_page_fw,
             cc_api_fw=cc_api_fw,
             country_map=country_map,
+            status_field="statusDesc",
+            allowed_statuses=["completed"],
         )
 
         withdraw = BaseWatcher(
