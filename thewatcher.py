@@ -422,12 +422,12 @@ class BaseWatcher:
     
     def _row_key(self, d: Dict[str, Any]) -> str | None:
         """Kayıtları güvenle eşsizleştirmek için anahtar üret."""
-        # 1) txid varsa onu kullan
-        v = d.get("txid")
-        if v not in (None, "", "null"):
-            s = str(v).strip()
-            if s:
-                return s
+        # 1) txid + uid (yoksa addressTo) birleşimi
+        txid = str(d.get("txid") or "").strip()
+        uid  = str(d.get("uid") or "").strip()
+        addr = str(d.get("addressTo") or "").strip()
+        if txid and txid.lower() != "null":
+            return f"{txid}:{uid or addr}"
         # 2) id'yi string olarak kullan (int'e çevirmeyin)
         v = d.get("id")
         if v not in (None, "", "null"):
