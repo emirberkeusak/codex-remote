@@ -651,23 +651,20 @@ def make_deposit_message(d: Dict[str, Any], emoji: str, title: str) -> str:
     tstr = fmt_tr(dt)
 
     symbol = str(d.get("symbol", ""))
-    amount = str(d.get("amount", ""))
-    txid = str(d.get("txid", ""))
-    address_to = str(d.get("addressTo", ""))
     usdt_amount = str(d.get("usdtAmount", ""))
     uid = str(d.get("uid", ""))
+    amount = str(d.get("amount", ""))
     status_desc = str(d.get("statusDesc", d.get("walletStatus", "")))
+    txid = str(d.get("txid", ""))
 
     lines = [
         f"{emoji} {title}",
-        f"symbol: {symbol}",
-        f"amount: {amount}",
-        f"txid: {txid}",
-        f"addressTo: {address_to}",
-        f"usdtAmount: {usdt_amount}",
-        f"uid: {uid}",
-        f"statusDesc: {status_desc}",
-        f"time: {tstr}",
+        f"SYMBOL: {symbol}",
+        f"USDTAMOUNT: {usdt_amount}",
+        f"UID: {uid}",
+        f"AMOUNT: {amount}",
+        f"STATUSDESC: {status_desc}",
+        f"TIME: {tstr}",
     ]
     coin_tx_url = str(d.get("coinTxUrl", "") or "")
     if coin_tx_url and txid:
@@ -685,22 +682,18 @@ def make_withdraw_message(d: Dict[str, Any], emoji: str, title: str) -> str:
 
     symbol = str(d.get("symbol", ""))
     usdt_amount = str(d.get("usdtAmount", ""))
-    txid = str(d.get("txid", ""))
-    address_to = str(d.get("addressTo", ""))
     uid = str(d.get("uid", ""))
     amount = str(d.get("amount", ""))
     status_desc = str(d.get("statusDesc", ""))
+    txid = str(d.get("txid", ""))
 
     lines = [
-        f"{emoji} {title}",
-        f"symbol: {symbol}",
-        f"usdtAmount: {usdt_amount}",
-        f"txid: {txid}",
-        f"addressTo: {address_to}",
-        f"uid: {uid}",
-        f"amount: {amount}",
-        f"statusDesc: {status_desc}",
-        f"time: {tstr}",
+        f"SYMBOL: {symbol}",
+        f"USDTAMOUNT: {usdt_amount}",
+        f"UID: {uid}",
+        f"AMOUNT: {amount}",
+        f"STATUSDESC: {status_desc}",
+        f"TIME: {tstr}",
     ]
     coin_tx_url = str(d.get("coinTxUrl", "") or "")
     if coin_tx_url and txid:
