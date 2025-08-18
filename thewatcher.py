@@ -1,4 +1,4 @@
-import asyncio, aiohttp, json, re, csv
+import asyncio, aiohttp, json, re, csv, os
 from datetime import datetime
 from typing import Any, Dict, Tuple, Optional, List, Set
 from urllib.parse import urlparse
@@ -53,6 +53,10 @@ WITHDRAW_STATE_FILE    = BASE_DIR / "state_withdraw.json"
 CC_PAGE_URL_FILE      = BASE_DIR / "cc_page_url.txt"           # baz: https://.../userDetail?id=
 CC_API_URL_FILE       = BASE_DIR / "cc_api_url.txt"            # https://.../admin-api/get_user_info
 
+# ----- Login config -----
+LOGIN_CONFIG_FILE     = BASE_DIR / "login.json"
+
+
 # ----- Ülke isim eşleme dosyaları (CSV / XLSX) -----
 COUNTRY_MAP_CSV       = BASE_DIR / "country_map.csv"           # Code,Country (opsiyonel)
 COUNTRY_MAP_XLSX      = BASE_DIR / "country_map.xlsx"          # COUNTRY, COUNTRY CODE (tercih edilen)
@@ -100,6 +104,19 @@ def parse_origin(url: str) -> str:
         return f"{u.scheme}://{host}{port}"
     except Exception:
         return ""
+    
+def load_login_credentials() -> Tuple[str, str, str]:
+    """Load login URL, username and password from environment or JSON config."""
+    url = os.environ.get("WATCHER_LOGIN_URL") or ""
+    user = os.environ.get("WATCHER_USERNAME") or ""
+    pwd = os.environ.get("WATCHER_PASSWORD") or ""
+    if url and user and pwd:
+        return url, user, pwd
+    try:
+        obj = json.loads(read_text_or_empty(LOGIN_CONFIG_FILE))
+        return obj.get("url", ""), obj.get("username", ""), obj.get("password", "")
+    except Exception:
+        return "", "", ""
 
 def load_json_or(path: Path, default: Any) -> Any:
     try:
@@ -371,6 +388,42 @@ class BaseWatcher:
         self.session: Optional[aiohttp.ClientSession] = None
         self.tg: Optional[Telegram] = None
 
+    def update_cookie_from_response(self, resp: aiohttp.ClientResponse) -> None:
+        """Merge Set-Cookie headers into current cookie and persist if changed."""
+        if resp is None:
+            return
+        try:
+            set_cookies = resp.headers.getall("Set-Cookie", [])
+        except AttributeError:
+            set_cookies = []
+        if not set_cookies:
+            return
+        cookies: Dict[str, str] = {}
+        if self.cookie:
+            for part in self.cookie.split(";"):
+                if "=" not in part:
+                    continue
+                k, v = part.split("=", 1)
+                cookies[k.strip()] = v.strip()
+        for sc in set_cookies:
+            first = sc.split(";", 1)[0]
+            if "=" not in first:
+                continue
+            k, v = first.split("=", 1)
+            cookies[k.strip()] = v.strip()
+        new_cookie = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        if new_cookie != self.cookie:
+            self.cookie = new_cookie
+            try:
+                self.cookie_fw.path.write_text(new_cookie, encoding="utf-8")
+                self.cookie_fw.value = new_cookie
+                try:
+                    self.cookie_fw.mtime = self.cookie_fw.path.stat().st_mtime
+                except FileNotFoundError:
+                    pass
+            except Exception as e:
+                print(f"[Cookie][{self.name}] yazılamadı: {e}")
+
     async def _get_html(self, url: str, origin: str, cookie: str, admin_token: Optional[str]) -> Tuple[int, str]:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
@@ -384,6 +437,7 @@ class BaseWatcher:
             headers["Admin-Token"] = admin_token
         try:
             async with self.session.get(url, headers=headers) as r:
+                self.update_cookie_from_response(r)
                 txt = await r.text()
                 return r.status, txt[:2000]
         except Exception as e:
@@ -416,6 +470,7 @@ class BaseWatcher:
 
         try:
             async with self.session.post(url, json=payload, headers=headers) as r:
+                self.update_cookie_from_response(r)
                 txt = await r.text()
                 try:
                     return r.status, json.loads(txt)
@@ -423,6 +478,39 @@ class BaseWatcher:
                     return r.status, txt[:2000]
         except Exception as e:
             return 0, f"[API hata] {e}"
+        
+    async def refresh_login(self, origin: str) -> bool:
+        """Attempt to login again using credentials from env or config."""
+        login_url, user, pwd = load_login_credentials()
+        if not login_url or not user or not pwd:
+            if self.tg:
+                await self.tg.send(f"⚠️ {self.name}: Login bilgileri eksik.")
+            return False
+        hdr_origin = parse_origin(login_url) or origin
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Origin": hdr_origin,
+            "Referer": hdr_origin,
+        }
+        payload = {"username": user, "password": pwd}
+        try:
+            async with self.session.post(login_url, json=payload, headers=headers) as r:
+                self.update_cookie_from_response(r)
+                await r.text()
+                if r.status == 200:
+                    self.logged_out = False
+                    if self.tg:
+                        await self.tg.send(f"ℹ️ {self.name}: Login yenilendi.")
+                    return True
+                else:
+                    if self.tg:
+                        await self.tg.send(f"⚠️ {self.name}: Login başarısız (HTTP {r.status}).")
+        except Exception as e:
+            if self.tg:
+                await self.tg.send(f"⚠️ {self.name}: Login hata: {e}")
+        return False
 
     async def _fetch_country_code_for_uid(self, uid: str) -> Optional[str]:
         if not uid:
@@ -704,6 +792,7 @@ class BaseWatcher:
                     if not self.logged_out:
                         await self.tg.send(f"🔴 {self.name}: User is not logged in (10004). Cookie/URL/headers expired.")
                         self.logged_out = True
+                    await self.refresh_login(origin)
                 else:
                     await self.tg.send(f"⚠️ {self.name}: API code={code}, msg={a_body.get('msg')}")
             else:
@@ -711,6 +800,7 @@ class BaseWatcher:
                 if not self.logged_out and (a_status in (401,403) or "not logged in" in low):
                     await self.tg.send(f"🔴 {self.name}: Oturum geçersiz (HTTP {a_status}). Cookie/URL güncelleyin.")
                     self.logged_out = True
+                    await self.refresh_login(origin)
 
             await asyncio.sleep(POLL_SECONDS)
 
