@@ -1,757 +1,692 @@
-#!/usr/bin/env python3
-# Gerekli paketler:
-# pip install requests openpyxl
-
-import sys
-import os
-import time
-import hmac
-import hashlib
+import asyncio, aiohttp, json, re, csv
+from datetime import datetime
+from typing import Any, Dict, Tuple, Optional, List
+from urllib.parse import urlparse
 from pathlib import Path
-import requests
-import json
-import threading
-from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, Alignment
 
+# ====== Telegram ayarları ======
+TELEGRAM_BOT_TOKEN = "7895901821:AAEJs3mmWxiWrRyVKcRiAxMN2Rn4IpiyV0o"
+TELEGRAM_CHAT_ID   = "-4678220102"
 
-# ---------------------------
-# Darkex endpointleri
-# ---------------------------
-URL = "https://www.darkex.com/fe-co-api/common/public_info"
-TIER_URL = "https://www.darkex.com/fe-co-api/common/public_futures_contract_info"
+# ====== Script klasörü ======
+BASE_DIR = Path(__file__).resolve().parent
 
-HEADERS = {
-    "accept": "application/json, text/plain, */*",
-    "accept-encoding": "gzip, deflate, br, zstd",
-    "accept-language": "en-US,en;q=0.9",
-    "content-type": "application/json;charset=UTF-8",
-    "cookie": "lan=en_US; cusSkin=1; _fbp=fb.1.1745354379248.163616128196321939; _ga=GA1.1.1245577152.1745354379; CHFIT_EXPIRATION=1776890380191; CHFIT_DEVICEID=lkWin7X1M2i0yHLWHdFi00Cbn-s1hP8kuFE_1mQ6oV7P9sQbcCs9Iov7cdoFlD1R; _c_WBKFRo=f9NDVPcQW7DStvrplQolw2uHnp5MAaBy5wc2HS5a; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%2232969520%22%2C%22first_id%22%3A%221965f3a4c5934-097b306403171b8-26011c51-2073600-1965f3a4c5a11e0%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMTk2NWYzYTRjNTkzNC0wOTdiMzA2NDAzMTcxYjgtMjYwMTFjNTEtMjA3MzYwMC0xOTY1ZjNhNGM1YTExZTAiLCIkaWRlbnRpdHlfbG9naW5faWQiOiIzMjk2OTUyMCJ9%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%2232969520%22%7D%7D; _ga_F1W306LH6F=GS2.1.s1747236858$o17$g0$t1747236858$j0$l0$h0; _ga_C8LDVXWDFX=GS2.1.s1747914149$o1$g1$t1747914351$j0$l0$h0; _ym_uid=1751001675844873554; _ym_d=1751001675; __adroll_fpc=06edb2ca75aa9ba5d43e72804323fd14-1751001675526; FP_DEVICE_ID=911fd120906b129f1e5bd990b8bce28c; FP_DEVICE_VISITORID=c5975ddb8cc0c21ee8c522e214aa267f; __ar_v4=EYQ6NBYIZVHR5EJ6S6GMBM%3A20250726%3A9%7CH6G3HUORVBAH7GXUFX35SX%3A20250726%3A9%7CFZFY2R4NYBEW3BCPTLTO7I%3A20250726%3A9; lan.sig=DNIiOSD1Q3ofA_oyppgjDfS2LXe3cDxtJwaaLdF0lFs; JSESSIONID=3D87863CB7063EC16AF9907473CAD0FD; token=bbee1f3b62e0021379a0ea496450e9c15f7963eeb0e54238b969367a3e7b4021; isLogin=true; _gcl_au=1.1.1539652439.1755367154; _tt_enable_cookie=1; _ttp=01K2T0J8SZ9QF8NQHV16R45CW8_.tt.1; _ym_isad=2; ttcsid=1755367154502::kc4hHH0s1XXDchSNse9g.1.1755367557069; ttcsid_D28BJ0JC77UB6AOKCVE0=1755367154501::H1-vqyElou2RbjIxFZxx.1.1755367559055; _ga_4JHJ4YPRL8=GS2.1.s1755371256$o129$g0$t1755371256$j60$l0$h0; _ga_3JN0V1H9P0=GS2.1.s1755371256$o42$g0$t1755371256$j60$l0$h0",
-    "device": "c5975ddb8cc0c21ee8c522e214aa267f",
-    "exchange-client": "pc",
-    "exchange-language": "en_US",
-    "exchange-token": "bbee1f3b62e0021379a0ea496450e9c15f7963eeb0e54238b969367a3e7b4021",
-    "futures-version": "101",
-    "is-sub": "0",
-    "origin": "https://www.darkex.com",
-    "priority": "u=1, i",
-    "referer": "https://www.darkex.com/en_US/futures/futuresData?marginCoin=USDT&type=1&contractId=467",
-    "sec-ch-ua": "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": "\"Windows\"",
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-    "sign": "e3f588ee62640b6a68c77b6176179b5b",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-    # uuid-cu varsa ekleyebilirsiniz: "uuid-cu": "..."
-}
+# ----- Deposit dosyaları -----
+DEPOSIT_API_URL_FILE   = BASE_DIR / "api_url.txt"              # https://.../admin-api/depositCrypto
+DEPOSIT_PAGE_URL_FILE  = BASE_DIR / "page_url.txt"             # https://.../depositCrypto
+DEPOSIT_COOKIE_FILE    = BASE_DIR / "cookie.txt"               # ortak
+DEPOSIT_PAYLOAD_FILE   = BASE_DIR / "payload.json"             # opsiyonel
+DEPOSIT_STATE_FILE     = BASE_DIR / "state.json"
 
+# ----- Withdraw dosyaları -----
+WITHDRAW_API_URL_FILE  = BASE_DIR / "api_url_withdraw.txt"     # https://.../admin-api/withdrawCrypto
+WITHDRAW_PAGE_URL_FILE = BASE_DIR / "page_url_withdraw.txt"    # https://.../withdrawCrypto
+WITHDRAW_PAYLOAD_FILE  = BASE_DIR / "payload_withdraw.json"    # opsiyonel
+WITHDRAW_STATE_FILE    = BASE_DIR / "state_withdraw.json"
 
-# ---------------------------
-# Binance (USDⓈ-M Futures) ayarları
-# ---------------------------
-API_KEY_BINANCE = "iJmoTezYi1v82UJ6IFFYUtgoH7Xf5lmmmdbZguxS3BPhm93RMB7VM7slDfnp2TM2"
-API_SECRET_BINANCE = "FXIEwjfjYuYFyAfpFT9ud5gluG3OzsNd68Fj7iPeIeXa1T2na6PwWpMPvcqO3lOy"
+# ----- CountryCode için ORTAK -----
+CC_PAGE_URL_FILE      = BASE_DIR / "cc_page_url.txt"           # baz: https://.../userDetail?id=
+CC_API_URL_FILE       = BASE_DIR / "cc_api_url.txt"            # https://.../admin-api/get_user_info
 
-BASE_URL_BINANCE = "https://fapi.binance.com"
-ENDPOINT_BINANCE = "/fapi/v1/leverageBracket"  # tüm semboller için risk limit
+# ----- Ülke isim eşleme dosyaları (CSV / XLSX) -----
+COUNTRY_MAP_CSV       = BASE_DIR / "country_map.csv"           # Code,Country (opsiyonel)
+COUNTRY_MAP_XLSX      = BASE_DIR / "country_map.xlsx"          # COUNTRY, COUNTRY CODE (tercih edilen)
 
-# ---------------------------
-# Telegram ayarları
-# ---------------------------
-TELEGRAM_BOT_TOKEN = "7295679982:AAGZfrco1rgSPbGdnkVaJj_FXHptSfyLUgo"
-TELEGRAM_CHAT_ID = "-1002503387372"
-TELEGRAM_THREAD_ID = "10363"
+# ====== Ayarlar ======
+POLL_SECONDS   = 5
+SEED_ON_START  = True
+CC_TIMEOUT_SEC = 1.5     # countryCode getirirken max bekleme sn
 
-
-def send_telegram_message(text: str):
-    """Telegram'a basit mesaj gönderimi."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "message_thread_id": TELEGRAM_THREAD_ID,
-        "text": text,
-    }
+# ----------------------------------------------------------
+def read_text_or_empty(path: Path) -> str:
     try:
-        requests.post(url, json=payload, timeout=10).raise_for_status()
-    except Exception as e:
-        print(f"Telegram mesajı gönderilemedi: {e}", file=sys.stderr)
+        return path.read_text(encoding="utf-8-sig").strip()
+    except FileNotFoundError:
+        return ""
 
-def send_telegram_document(file_path: Path, caption: str = None):
-    """Telegram'a dosya (Excel) gönderir."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-    }
-    # Konu başlığı (forum/konu kullanan süpergruplar için)
-    if TELEGRAM_THREAD_ID:
-        data["message_thread_id"] = TELEGRAM_THREAD_ID
-    if caption:
-        data["caption"] = caption
+def normalize_cookie_value(text: str) -> str:
+    if not text:
+        return ""
+    t = text.strip()
+    if t.lower().startswith("cookie:"):
+        t = t.split(":", 1)[1].strip()
+    return " ".join(s.strip() for s in t.splitlines() if s.strip())
 
-    # Excel MIME tipi
-    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    # Telegram’da düzgün görünsün diye okunur bir dosya adı veriyoruz
-    filename = "Guncel_darkex_tier_list.xlsx"
-
-    with open(file_path, "rb") as f:
-        files = {"document": (filename, f, mime)}
-        try:
-            requests.post(url, data=data, files=files, timeout=60).raise_for_status()
-        except Exception as e:
-            print(f"Telegram dosya gönderilemedi: {e}", file=sys.stderr)
-
-
-
-# ===========================
-# Mevcut yardımcılar (değişmeden)
-# ===========================
-def normalize_symbol(c: dict) -> str:
-    """
-    Darkex sözleşme objesinden base/quote veya symbol alanlarını kullanarak
-    standart sembol (ör. BTCUSDT) oluşturur.
-    """
-    base, quote = c.get("base"), c.get("quote")
-    if base and quote:
-        return f"{base}{quote}"
-    sym = c.get("symbol") or ""
-    return sym.replace("-", "")
-
-
-def extract_symbol_id(data: dict):
-    """
-    API'den dönen data objesinden (data['contractList']) (symbol, contract_id) listesi çıkarır.
-    Alfabetik olarak sembole göre sıralar.
-    """
-    rows = []
-    for c in (data or {}).get("contractList", []):
-        sym = normalize_symbol(c)
-        cid = c.get("id")
-        if sym and cid is not None:
-            rows.append((sym, cid))
-    return sorted(rows, key=lambda x: x[0])
-
-
-def get_desktop_path() -> Path:
-    """
-    Kullanıcının Masaüstü klasörünün yolunu döndürür.
-    - Varsayılan: ~ / Desktop
-    - Windows'ta özel konumlandırma varsa kayıt defterinden okumayı dener.
-    - Masaüstü mevcut değilse ev dizinine döner.
-    """
-    home = Path.home()
-    desktop = home / "Desktop"
-    if desktop.exists():
-        return desktop
-
-    try:
-        if os.name == "nt":
-            import winreg
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
-            ) as key:
-                desktop_dir = winreg.QueryValueEx(key, "Desktop")[0]
-                p = Path(desktop_dir)
-                if p.exists():
-                    return p
-    except Exception:
-        pass
-
-    return home
-
-
-def save_to_excel(rows, filepath: Path):
-    """
-    (symbol, contract_id) satırlarını tek sayfalık bir Excel dosyasına yazar.
-    Başlıkları kalın yapar, sütun genişliklerini içerik uzunluğuna göre ayarlar.
-    """
-    from openpyxl import Workbook
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Contracts"
-
-    headers = ["SYMBOL", "CONTRACT_ID"]
-    header_font = Font(bold=True)
-    left_align = Alignment(horizontal="left")
-
-    ws.cell(row=1, column=1, value=headers[0]).font = header_font
-    ws.cell(row=1, column=2, value=headers[1]).font = header_font
-
-    r = 2
-    for sym, cid in rows:
-        ws.cell(row=r, column=1, value=str(sym)).alignment = left_align
-        ws.cell(row=r, column=2, value=cid)
-        r += 1
-
-    max_len_symbol = max(len("SYMBOL"), *(len(str(s)) for s, _ in rows)) if rows else len("SYMBOL")
-    max_len_id = max(len("CONTRACT_ID"), *(len(str(cid)) for _, cid in rows)) if rows else len("CONTRACT_ID")
-
-    ws.column_dimensions["A"].width = max_len_symbol + 2
-    ws.column_dimensions["B"].width = max_len_id + 2
-    ws.freeze_panes = "A2"
-
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(str(filepath))
-
-
-# ---------------------------
-# Darkex Tier çekme ve yazdırma
-# ---------------------------
-def build_referer_for_contract(cid: int) -> str:
-    return f"https://www.darkex.com/en_US/futures/futuresData?marginCoin=USDT&type=1&contractId={cid}"
-
-
-def find_contract_mapping_file() -> Path | None:
-    """
-    contract_id_mapping.xlsx dosyasını önce çalışma dizininde, sonra Masaüstünde arar.
-    Bulamazsa None döner.
-    """
-    cwd = Path.cwd() / "contract_id_mapping.xlsx"
-    if cwd.exists():
-        return cwd
-    desktop = get_desktop_path() / "contract_id_mapping.xlsx"
-    if desktop.exists():
-        return desktop
+def cookie_get(cookie_value: str, name: str) -> Optional[str]:
+    if not cookie_value:
+        return None
+    for part in cookie_value.split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        if k.strip().lower() == name.lower():
+            return v.strip()
     return None
 
-
-def load_contract_ids_from_excel(filepath: Path):
-    """
-    contract_id_mapping.xlsx dosyasından (SYMBOL, CONTRACT_ID) listesi okur.
-    """
+def parse_origin(url: str) -> str:
     try:
-        wb = load_workbook(filepath, read_only=True, data_only=True)
-    except Exception as e:
-        print(f"Excel okuma hatası ({filepath}): {e}", file=sys.stderr)
-        sys.exit(4)
-
-    ws = wb.active
-    headers = [str(cell.value).strip() if cell.value is not None else "" for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-    header_map = {h.lower(): idx for idx, h in enumerate(headers)}
-    sym_idx = header_map.get("symbol")
-    cid_idx = header_map.get("contract_id")
-    if cid_idx is None:
-        wb.close()
-        print("Excel'de 'CONTRACT_ID' sütunu bulunamadı.", file=sys.stderr)
-        sys.exit(5)
-
-    rows = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        sym = row[sym_idx] if sym_idx is not None else ""
-        cid = row[cid_idx]
-        if cid is None:
-            continue
-        try:
-            cid_int = int(str(cid).split(".")[0].strip())
-        except Exception:
-            continue
-        sym_str = str(sym).strip() if sym is not None else ""
-        rows.append((sym_str, cid_int))
-
-    wb.close()
-    return rows
-
-
-def fetch_tier_info(session: requests.Session, contract_id: int):
-    """
-    Darkex: Belirli CONTRACT_ID için tier listesi.
-    """
-    ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    payload = {"contractId": contract_id, "uaTime": ua_time}
-
-    hdr = dict(HEADERS)
-    hdr["referer"] = build_referer_for_contract(contract_id)
-
-    try:
-        r = session.post(TIER_URL, json=payload, headers=hdr, timeout=20)
-        r.raise_for_status()
-        j = r.json()
-    except Exception as e:
-        return {"ok": False, "error": f"istek/parse hatası: {e}", "contract_id": contract_id}
-
-    if j.get("code") == "0":
-        data = j.get("data", {}) or {}
-        return {
-            "ok": True,
-            "contract_id": contract_id,
-            "leverMarginInfo": data.get("leverMarginInfo", []) or [],
-            "coinAlias": data.get("coinAlias"),
-            "mTime": data.get("mTime"),
-        }
-    else:
-        return {"ok": False, "error": f"API hata cevabı: {j}", "contract_id": contract_id}
-
-
-def format_mtime(ms_value) -> str:
-    try:
-        ms_int = int(str(ms_value))
-        dt = datetime.fromtimestamp(ms_int / 1000.0)
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
+        u = urlparse(url)
+        if not u.scheme or not u.netloc:
+            return ""
+        host = u.hostname or ""
+        port = ""
+        if u.port and not ((u.scheme == "https" and u.port == 443) or (u.scheme == "http" and u.port == 80)):
+            port = f":{u.port}"
+        return f"{u.scheme}://{host}{port}"
     except Exception:
         return ""
 
+def load_json_or(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return default
 
-def print_tier_block(symbol: str, contract_id, result: dict):
+def save_json(path: Path, obj: Any) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+def fmt_tr(dt: datetime) -> str:
+    return dt.strftime("%d/%m/%Y %H.%M.%S")
+
+class FileWatcher:
+    def __init__(self, path: Path, normalize_fn=None):
+        self.path = Path(path)
+        self.norm = normalize_fn
+        self.mtime = 0.0
+        self.value: Optional[str] = None
+
+    def load_if_changed(self) -> Tuple[bool, Optional[str]]:
+        try:
+            st = self.path.stat()
+            if self.mtime != st.st_mtime:
+                raw = read_text_or_empty(self.path)
+                self.value = self.norm(raw) if self.norm else raw
+                self.mtime = st.st_mtime
+                return True, self.value
+        except FileNotFoundError:
+            pass
+        return False, self.value
+
+# ---------- Country map (CSV veya XLSX) ----------
+class CountryMap:
     """
-    Tek bir sembol/kontrat için tier listesini terminale alt alta yazdırır.
-    contract_id Darkex için int, Binance için 'BINANCE' gibi string olabilir.
+    - XLSX varsa onu okur (COUNTRY, COUNTRY CODE sütunları).
+    - Yoksa CSV okur (Code,Country / Country Code,Country vs. esnek başlık).
+    - Kod hücresinde '1-809, 1-829, 1-849' gibi ifadeler varsa içindeki TÜM sayı parçalarını ayrı ayrı map'ler.
     """
-    header_line = f"{symbol}  (CONTRACT_ID={contract_id})" if symbol else f"(CONTRACT_ID={contract_id})"
-    print(header_line)
-    if not result or not result.get("ok"):
-        err = (result or {}).get("error", "tier verisi alınamadı")
-        print(f"  Hata: {err}")
-        print("-" * 48)
-        return
+    def __init__(self, csv_path: Path, xlsx_path: Path):
+        self.csv_path  = Path(csv_path)
+        self.xlsx_path = Path(xlsx_path)
+        self.use_xlsx  = self.xlsx_path.exists()
+        self.mtime = 0.0
+        self.map: Dict[str, List[str]] = {}
 
-    tiers = result.get("leverMarginInfo", []) or []
-    coin_alias = result.get("coinAlias")
-    mtime_str = format_mtime(result.get("mTime"))
-    if coin_alias:
-        print(f"  Margin Coin: {coin_alias}")
-    if mtime_str:
-        print(f"  mTime: {mtime_str}")
+    # --- yardımcılar ---
+    @staticmethod
+    def _numeric_pieces(cell: str) -> List[str]:
+        """Hücre içindeki TÜM sayı parçalarını çıkar (örn '1-829, 1-849' -> ['1','829','1','849'])."""
+        if not cell:
+            return []
+        return re.findall(r"\d+", str(cell))
 
-    if not tiers:
-        print("  Tier verisi yok.")
-        print("-" * 48)
-        return
+    @staticmethod
+    def _append(mapobj: Dict[str, List[str]], code: str, country: str):
+        if not code or not country:
+            return
+        mapobj.setdefault(code, [])
+        if country not in mapobj[code]:
+            mapobj[code].append(country)
 
-    print("  level | maxLever | minPositionValue | maxPositionValue | minMarginRate")
-    for t in tiers:
-        level = t.get("level")
-        maxLever = t.get("maxLever")
-        minPos = t.get("minPositionValue")
-        maxPos = t.get("maxPositionValue")
-        minRate = t.get("minMarginRate")
-        print(f"  {str(level):>5} | {str(maxLever):>8} | {str(minPos):>16} | {str(maxPos):>16} | {str(minRate):>12}")
-    print("-" * 48)
+    # --- CSV ---
+    def _load_csv(self) -> Dict[str, List[str]]:
+        res: Dict[str, List[str]] = {}
+        with self.csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+        if not rows:
+            return res
+        headers = [h.strip().lower() for h in rows[0]]
+        # sütun indeksleri
+        try:
+            code_idx = headers.index("country code")
+        except ValueError:
+            try:
+                code_idx = headers.index("code")
+            except ValueError:
+                code_idx = 0
+        try:
+            country_idx = headers.index("country")
+        except ValueError:
+            country_idx = 1 if len(headers) > 1 else 0
 
+        for row in rows[1:]:
+            if len(row) <= max(code_idx, country_idx):
+                continue
+            country = (row[country_idx] or "").strip()
+            for piece in self._numeric_pieces(row[code_idx]):
+                self._append(res, piece, country)
+        return res
 
-def batch_fetch_and_print_tiers(rows):
-    """
-    Darkex: Çoklu CONTRACT_ID için eşzamanlı istek ve yazdırma.
-    """
-    max_workers = min(12, max(4, (os.cpu_count() or 4) * 2))
-    with requests.Session() as session:
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = [(sym, cid, ex.submit(fetch_tier_info, session, cid)) for sym, cid in rows]
-            for sym, cid, fut in futures:
-                res = None
+    # --- XLSX ---
+    def _load_xlsx(self) -> Dict[str, List[str]]:
+        res: Dict[str, List[str]] = {}
+        try:
+            import openpyxl  # pip install openpyxl
+        except Exception as e:
+            print(f"[CountryMap] openpyxl yok veya yüklenemedi: {e}")
+            return res
+
+        wb = openpyxl.load_workbook(self.xlsx_path, data_only=True, read_only=True)
+        ws = wb.active
+
+        # Başlık satırı
+        headers = []
+        for cell in ws[1]:
+            headers.append((cell.value or "").strip().lower())
+        # Sütun indeksleri
+        def idx_of(names: List[str], fallback: int) -> int:
+            for i, h in enumerate(headers):
+                if h in names:
+                    return i
+            return fallback
+
+        code_col = idx_of(["country code", "country_code", "code", "kod"], 1)
+        country_col = idx_of(["country", "ülke", "name"], 0)
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            vals = ["" if v is None else str(v) for v in row]
+            if len(vals) <= max(code_col, country_col):
+                continue
+            country = vals[country_col].strip()
+            code_cell = vals[code_col]
+            for piece in self._numeric_pieces(code_cell):
+                self._append(res, piece, country)
+        return res
+
+    def reload_if_changed(self) -> bool:
+        # hangi dosya?
+        self.use_xlsx = self.xlsx_path.exists()
+        target = self.xlsx_path if self.use_xlsx else self.csv_path
+        try:
+            st = target.stat()
+            if st.st_mtime == self.mtime:
+                return False
+            self.mtime = st.st_mtime
+        except FileNotFoundError:
+            if self.map:
+                self.map = {}
+            return False
+
+        try:
+            new_map = self._load_xlsx() if self.use_xlsx else self._load_csv()
+            self.map = new_map
+            kind = "XLSX" if self.use_xlsx else "CSV"
+            print(f"[CountryMap] {kind} yüklendi; toplam kod={len(self.map)}")
+            return True
+        except Exception as e:
+            print(f"[CountryMap] yükleme hatası: {e}")
+            self.map = {}
+            return True
+
+    def countries_for_cc(self, cc_str: Optional[str]) -> Optional[str]:
+        """cc_str: '+792+90' -> '90' al, map'te ara, listeyi ' / ' ile birleştir."""
+        if not cc_str:
+            return None
+        digits = re.findall(r"\d+", str(cc_str))
+        if not digits:
+            return None
+        code = digits[-1]
+        lst = self.map.get(code)
+        if not lst:
+            return None
+        return " / ".join(lst)
+
+# ---------- Telegram ----------
+class Telegram:
+    def __init__(self, session: aiohttp.ClientSession, token: str, chat_id: str):
+        self.session = session
+        self.token = token
+        self.chat_id = chat_id
+
+    async def send(self, text: str) -> None:
+        print(f"[TG] {text}")
+        if not self.token or not self.chat_id:
+            return
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        data = {"chat_id": self.chat_id, "text": text, "disable_web_page_preview": True}
+        try:
+            async with self.session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                await r.text()
+        except Exception as e:
+            print(f"[WARN] Telegram gönderilemedi: {e}")
+
+# ---------- Yardımcılar ----------
+def build_user_detail_url(base_or_full: str, uid: str) -> Optional[str]:
+    if not base_or_full or not uid:
+        return None
+    s = base_or_full.strip()
+    if re.search(r"id=$", s):
+        return s + uid
+    if re.search(r"id=\d+$", s):
+        return re.sub(r"id=\d+$", f"id={uid}", s)
+    if "?" in s:
+        joiner = "&" if not s.endswith("&") else ""
+        return f"{s}{joiner}id={uid}"
+    else:
+        joiner = "?" if not s.endswith("?") else ""
+        return f"{s}{joiner}id={uid}"
+
+class BaseWatcher:
+    def __init__(
+        self,
+        name: str,
+        api_url_file: Path,
+        page_url_file: Path,
+        cookie_file: Path,
+        payload_file: Path,
+        state_file: Path,
+        list_keys: List[str],
+        header_emoji: str,
+        header_title: str,
+        wanted_fields_fn,
+        cc_page_fw: FileWatcher,
+        cc_api_fw: FileWatcher,
+        country_map: CountryMap,
+    ):
+        self.name = name
+        self.api_fw     = FileWatcher(api_url_file,   normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
+        self.page_fw    = FileWatcher(page_url_file,  normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
+        self.cookie_fw  = FileWatcher(cookie_file,    normalize_fn=normalize_cookie_value)
+        self.payload_fw = FileWatcher(payload_file,   normalize_fn=lambda s: s)
+
+        self.api_url  = ""
+        self.page_url = ""
+        self.cookie   = ""
+        self.payload  = {}
+
+        st = load_json_or(state_file, {"seen_ids": [], "seeded": False})
+        self.seen_ids_file = state_file
+        self.seen_ids = set(st.get("seen_ids", []))
+        self.seeded   = bool(st.get("seeded", False))
+        self.logged_out = False
+
+        self.list_keys = list_keys
+        self.header_emoji = header_emoji
+        self.header_title = header_title
+        self.make_message = wanted_fields_fn
+
+        self.cc_page_fw = cc_page_fw
+        self.cc_api_fw  = cc_api_fw
+        self.country_map = country_map
+
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.tg: Optional[Telegram] = None
+
+    async def _get_html(self, url: str, origin: str, cookie: str, admin_token: Optional[str]) -> Tuple[int, str]:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": origin,
+            "Cookie": cookie,
+            "Cache-Control": "no-cache",
+        }
+        if admin_token:
+            headers["Admin-Token"] = admin_token
+        try:
+            async with self.session.get(url, headers=headers) as r:
+                txt = await r.text()
+                return r.status, txt[:2000]
+        except Exception as e:
+            return 0, f"[HTML hata] {e}"
+
+    async def _post_api(self, url: str, origin: str, page_url: str, cookie: str, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any] | str]:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": origin,
+            "Referer": page_url,
+            "X-Requested-With": "XMLHttpRequest",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Cookie": cookie,
+            "Admin-language": "en_US",
+        }
+        admin_token = cookie_get(cookie, "admin-token")
+        if admin_token:
+            headers["Admin-Token"] = admin_token
+        csrf = cookie_get(cookie, "csrfToken")
+        if csrf:
+            headers["X-CSRF-Token"] = csrf
+        token_swap = cookie_get(cookie, "admin-token-swap")
+        if token_swap:
+            headers["Admin-Token-Swap"] = token_swap
+
+        try:
+            async with self.session.post(url, json=payload, headers=headers) as r:
+                txt = await r.text()
                 try:
-                    res = fut.result()
-                except Exception as e:
-                    res = {"ok": False, "error": f"future/unknown: {e}", "contract_id": cid}
-                print_tier_block(sym, cid, res)
+                    return r.status, json.loads(txt)
+                except json.JSONDecodeError:
+                    return r.status, txt[:2000]
+        except Exception as e:
+            return 0, f"[API hata] {e}"
 
-# ---------------------------
-# Excel oluşturma yardımcıları
-# ---------------------------
-def fetch_all_tier_data():
-    """Tüm sözleşmeler için tier verilerini çeker."""
-    ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    payload = {"uaTime": ua_time}
+    async def _fetch_country_code_for_uid(self, uid: str) -> Optional[str]:
+        if not uid:
+            return None
+        cc_page_base = self.cc_page_fw.value or ""
+        cc_api_url   = self.cc_api_fw.value or ""
+        if not cc_page_base or not cc_api_url:
+            return None
+        user_detail_url = build_user_detail_url(cc_page_base, uid)
+        if not user_detail_url:
+            return None
+        origin = parse_origin(cc_api_url) or parse_origin(user_detail_url)
+        if not origin:
+            return None
+        admin_token = cookie_get(self.cookie, "admin-token")
+        try:
+            _status_html, _ = await self._get_html(user_detail_url, origin, self.cookie, admin_token)
+        except Exception as e:
+            print(f"[CC][{self.name}] userDetail GET hata: {e}")
+        await asyncio.sleep(0.25)
+        payload = {"userId": uid}
+        status, body = await self._post_api(
+            url=cc_api_url,
+            origin=origin,
+            page_url=user_detail_url,
+            cookie=self.cookie,
+            payload=payload,
+        )
+        if isinstance(body, dict) and str(body.get("code")) == "0":
+            data = body.get("data") or {}
+            user = data.get("user") or {}
+            cc = user.get("countryCode") or data.get("countryCode") or user.get("mobileNumberCountryCode")
+            if cc not in (None, "", "null"):
+                return str(cc)
+        print(f"[CC][{self.name}] uid={uid} cc alınamadı; http={status}, body={str(body)[:300]}")
+        return None
 
-    r = requests.post(URL, json=payload, headers=HEADERS, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    if data.get("code") != "0":
-        raise RuntimeError(f"API hata cevabı: {data}")
+    def _find_list(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        for key in self.list_keys:
+            arr = data.get(key)
+            if isinstance(arr, list):
+                return arr
+        return []
 
-    contracts = data.get("data", {}).get("contractList", []) or []
-    rows = []
-    with requests.Session() as session:
-        max_workers = min(12, max(4, (os.cpu_count() or 4) * 2))
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = {}
-            for c in contracts:
-                cid = c.get("id")
-                if cid is None:
-                    continue
-                futs[ex.submit(fetch_tier_info, session, cid)] = (normalize_symbol(c), cid)
+    async def _handle_rows(self, body: Dict[str, Any]) -> None:
+        data = body.get("data") or {}
+        items = self._find_list(data)
+        if not isinstance(items, list):
+            await self.tg.send(f"⚠️ {self.name}: Beklenen liste bulunamadı ({' / '.join(self.list_keys)}).")
+            return
 
-            for fut, (sym, cid) in futs.items():
+        if SEED_ON_START and not self.seeded:
+            for d in items:
                 try:
-                    res = fut.result()
+                    self.seen_ids.add(int(d.get("id")))
                 except Exception:
                     continue
-                if res.get("ok"):
-                    for idx, t in enumerate(res.get("leverMarginInfo", []), start=1):
-                        rows.append(
-                            (
-                                sym,
-                                cid,
-                                idx,
-                                t.get("maxLever"),
-                                t.get("minPositionValue"),
-                                t.get("maxPositionValue"),
-                                t.get("minMarginRate"),
-                            )
-                        )
-    return rows
+            self.seeded = True
+            save_json(self.seen_ids_file, {"seen_ids": sorted(self.seen_ids), "seeded": True})
+            await self.tg.send(f"ℹ️ {self.name}: İlk yükleme — mevcut kayıtlar baz alındı (bildirim yok).")
+            return
 
-
-def save_tiers_to_excel(rows, filepath: Path):
-    """Tier verilerini Excel dosyasına yazar."""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Tiers"
-
-    headers = [
-        "SYMBOL",
-        "CONTRACT_ID",
-        "LEVEL",
-        "MAX_LEVER",
-        "MIN_POSITION_VALUE",
-        "MAX_POSITION_VALUE",
-        "MIN_MARGIN_RATE",
-    ]
-    header_font = Font(bold=True)
-    left_align = Alignment(horizontal="left")
-
-    for col, head in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=head)
-        cell.font = header_font
-        cell.alignment = left_align
-
-    for r_idx, row in enumerate(rows, start=2):
-        for c_idx, value in enumerate(row, start=1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=value)
-            cell.alignment = left_align
-
-    letters = ["A", "B", "C", "D", "E", "F", "G"]
-    for i, letter in enumerate(letters):
-        max_len = len(headers[i])
-        for row in rows:
-            v = row[i]
-            if v is not None:
-                max_len = max(max_len, len(str(v)))
-        ws.column_dimensions[letter].width = max_len + 2
-
-    ws.freeze_panes = "A2"
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(str(filepath))
-
-
-def handle_create_excel_command():
-    """/create_excel komutunu işler."""
-    # Masaüstüne kaydetmek yerine Telegram'dan gönderiyoruz
-    send_telegram_message("Darkex tier verileri toplanıyor...")
-    try:
-        import tempfile  # sadece burada kullanıyoruz; global import gerekmez
-        rows = fetch_all_tier_data()
-
-        # Geçici dosyaya yaz
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-            tmp_path = Path(tmp.name)
-
-        save_tiers_to_excel(rows, tmp_path)
-
-        # Telegram'a gönder
-        send_telegram_document(tmp_path, caption="Darkex tier listesi (güncel)")
-
-        # Temizle
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-
-        send_telegram_message("Excel dosyası Telegram'a gönderildi.")
-    except Exception as e:
-        send_telegram_message(f"Excel oluşturulamadı: {e}")
-
-
-
-def poll_telegram_commands():
-    """Telegram'dan komutları dinler."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    offset = None
-    while True:
-        params = {"timeout": 30}
-        if offset is not None:
-            params["offset"] = offset
-        try:
-            resp = requests.get(url, params=params, timeout=35)
-            resp.raise_for_status()
-            data = resp.json()
-            for upd in data.get("result", []):
-                offset = upd.get("update_id", 0) + 1
-                msg = upd.get("message", {})
-                text = (msg.get("text") or "").strip()
-                if text == "/create_excel":
-                    threading.Thread(target=handle_create_excel_command, daemon=True).start()
-        except Exception as e:
-            print(f"Polling error: {e}", file=sys.stderr)
-            time.sleep(5)
-
-
-# ---------------------------
-# Binance risk limit (tier) çekme ve yazdırma
-# ---------------------------
-def fetch_all_brackets_binance(session: requests.Session):
-    """
-    Binance USDⓈ-M Futures: Tüm semboller için risk limit tablolarını çeker.
-    """
-    ts = str(int(time.time() * 1000))
-    qs = f"timestamp={ts}&recvWindow=5000"
-    signature = hmac.new(API_SECRET_BINANCE.encode(), qs.encode(), hashlib.sha256).hexdigest()
-    url = f"{BASE_URL_BINANCE}{ENDPOINT_BINANCE}?{qs}&signature={signature}"
-    headers = {"X-MBX-APIKEY": API_KEY_BINANCE}
-
-    resp = session.get(url, headers=headers, timeout=15)
-    resp.raise_for_status()
-    return resp.json()  # list[ {symbol, brackets:[...]} ]
-
-
-def binance_brackets_to_tiers_entry(entry: dict):
-    """
-    Binance 'brackets' girdisini (symbol için) Darkex formatına dönüştürür.
-    """
-    tiers = []
-    for br in entry.get("brackets", []):
-        level = br.get("bracket")
-        lev = br.get("initialLeverage")
-        max_lever = f"{int(lev)}x" if lev is not None else ""
-        # notional tercih, yoksa qty:
-        min_pos = br.get("notionalFloor", br.get("qtyFloor"))
-        max_pos = br.get("notionalCap", br.get("qtyCap"))
-        mmr = br.get("maintMarginRatio")
-        if mmr is not None:
+        new_items = []
+        for d in items:
             try:
-                min_rate = f"{float(mmr) * 100:.2f}%"
+                did = int(d.get("id"))
             except Exception:
-                min_rate = str(mmr)
-        else:
-            min_rate = ""
+                continue
+            if did not in self.seen_ids:
+                new_items.append(d)
+                self.seen_ids.add(did)
 
-        tiers.append({
-            "level": str(level) if level is not None else "",
-            "maxLever": max_lever,
-            "minPositionValue": str(min_pos) if min_pos is not None else "",
-            "maxPositionValue": str(max_pos) if max_pos is not None else "",
-            "minMarginRate": min_rate,
-        })
-    return tiers
-
-
-def unique_symbols_in_order(rows):
-    """
-    rows: [(symbol, contract_id)] -> list of unique symbols preserving order.
-    """
-    seen = set()
-    out = []
-    for sym, _ in rows:
-        s = str(sym).strip()
-        if not s:
-            continue
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
-
-
-def print_binance_tiers_for_symbols(symbols):
-    """
-    Binance: Veriyi tek çağrıda alır, istenen semboller için Darkex ile aynı
-    tablo formatında (kolon adları ve hizalama) terminale yazar.
-    """
-    with requests.Session() as session:
-        try:
-            all_data = fetch_all_brackets_binance(session)
-        except Exception as e:
-            print(f"Binance risk limit verisi alınamadı: {e}", file=sys.stderr)
+        if not new_items:
             return
 
-    # symbol -> entry map
-    by_symbol = {}
-    for item in all_data or []:
-        sym = item.get("symbol")
-        if sym:
-            by_symbol[sym] = item
+        new_items.sort(key=lambda x: x.get("createdAt", 0))
+        for d in new_items:
+            uid = str(d.get("uid", "") or "")
+            cc = "—"
+            if uid:
+                try:
+                    cc = await asyncio.wait_for(self._fetch_country_code_for_uid(uid), timeout=CC_TIMEOUT_SEC)
+                    if cc is None or cc == "" or str(cc).lower() == "null":
+                        cc = "—"
+                except asyncio.TimeoutError:
+                    print(f"[CC][{self.name}] uid={uid} timeout ({CC_TIMEOUT_SEC}s). Mesaj cc'siz gönderilecek.")
+                    cc = "—"
+                except Exception as e:
+                    print(f"[CC][{self.name}] uid={uid} hata: {e}")
+                    cc = "—"
 
-    for sym in symbols:
-        entry = by_symbol.get(sym)
-        if not entry:
-            print_tier_block(sym, "BINANCE", {"ok": False, "error": "Sembol bulunamadı"})
-            continue
+            # Ülke isimleri (xlsx/csv)
+            self.country_map.reload_if_changed()
+            country_names = self.country_map.countries_for_cc(cc if cc != "—" else None)
+            country_line = f"Country: {country_names if country_names else '—'}"
 
-        tiers = binance_brackets_to_tiers_entry(entry)
-        # USDT çiftleri için Margin Coin'i yazdırmak isterseniz:
-        coin_alias = "USDT" if sym.endswith("USDT") else None
-        result = {"ok": True, "leverMarginInfo": tiers}
-        if coin_alias:
-            result["coinAlias"] = coin_alias
+            msg = self.make_message(d, self.header_emoji, self.header_title)
+            parts = msg.splitlines()
+            if parts:
+                parts.insert(1, country_line)
+                msg = "\n".join(parts)
+            else:
+                msg = f"{country_line}\n{msg}"
+            msg = f"{msg}\ncountryCode: {cc}"
+            await self.tg.send(msg)
 
-        print_tier_block(sym, "BINANCE", result)
+        if len(self.seen_ids) > 5000:
+            self.seen_ids = set(list(self.seen_ids)[-3000:])
+        save_json(self.seen_ids_file, {"seen_ids": sorted(self.seen_ids), "seeded": self.seeded})
 
-def check_binance_tiers(filepath: str = "binance_tiers.json"):
-    """Binance risk limit değişikliklerini kontrol eder."""
-    old_data = {}
-    p = Path(filepath)
+    async def run(self, session: aiohttp.ClientSession, tg: Telegram):
+        self.session = session
+        self.tg = tg
 
-    # 🚨 Eğer dosya hiç yoksa: sadece snapshot kaydet ve çık
-    if not p.exists():
-        with requests.Session() as session:
+        for fw in (self.api_fw, self.page_fw, self.cookie_fw, self.payload_fw, self.cc_page_fw, self.cc_api_fw):
+            fw.load_if_changed()
+
+        if self.payload_fw.value:
             try:
-                all_data = fetch_all_brackets_binance(session)
-            except Exception as e:
-                print(f"Binance risk limit verisi alınamadı: {e}", file=sys.stderr)
-                return
-        new_data = {}
-        for item in all_data or []:
-            sym = item.get("symbol")
-            if sym:
-                new_data[sym] = binance_brackets_to_tiers_entry(item)
-        try:
-            with p.open("w", encoding="utf-8") as f:
-                json.dump(new_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Binance risk limit snapshot kaydedilemedi: {e}", file=sys.stderr)
-        print("İlk çalıştırma: snapshot kaydedildi, Telegram'a mesaj gönderilmedi.")
-        return
+                self.payload = json.loads(self.payload_fw.value)
+            except Exception:
+                self.payload = {}
+                await self.tg.send(f"⚠️ {self.name}: payload JSON değil, boş gövde ile devam.")
+        else:
+            self.payload = {}
 
-    # 🚨 Buradan sonrası artık kıyaslama kısmı
+        self.api_url  = self.api_fw.value or ""
+        self.page_url = self.page_fw.value or ""
+        self.cookie   = self.cookie_fw.value or ""
+
+        def info(p: Path) -> str:
+            return f"{p}  (exists={p.exists()} size={p.stat().st_size if p.exists() else 0})"
+        await self.tg.send(
+            f"📂 {self.name} dosyaları:\n"
+            f"- api: {info(self.api_fw.path)}\n"
+            f"- page: {info(self.page_fw.path)}\n"
+            f"- cookie: {info(self.cookie_fw.path)}\n"
+            f"- payload: {info(self.payload_fw.path)}\n"
+            f"- cc_page: {info(self.cc_page_fw.path)}\n"
+            f"- cc_api: {info(self.cc_api_fw.path)}\n"
+            f"- country_map.csv: {info(COUNTRY_MAP_CSV)}\n"
+            f"- country_map.xlsx: {info(COUNTRY_MAP_XLSX)}"
+        )
+
+        while True:
+            for name, fw in (("API URL", self.api_fw), ("PAGE URL", self.page_fw),
+                             ("COOKIE", self.cookie_fw), ("PAYLOAD", self.payload_fw),
+                             ("CC PAGE", self.cc_page_fw), ("CC API", self.cc_api_fw)):
+                changed, val = fw.load_if_changed()
+                if changed:
+                    if name == "API URL":
+                        self.api_url = val or ""
+                    elif name == "PAGE URL":
+                        self.page_url = val or ""
+                    elif name == "COOKIE":
+                        self.cookie = val or ""
+                    elif name == "PAYLOAD":
+                        try:
+                            self.payload = json.loads(val) if val else {}
+                        except Exception:
+                            self.payload = {}
+                            await self.tg.send(f"⚠️ {self.name}: payload JSON değil; boş gövde ile devam.")
+                    await self.tg.send(f"ℹ️ {self.name}: {name} güncellendi.")
+
+            if not self.api_url or not self.page_url or not self.cookie:
+                await asyncio.sleep(POLL_SECONDS)
+                continue
+
+            origin = parse_origin(self.api_url or self.page_url)
+
+            admin_token = cookie_get(self.cookie, "admin-token")
+            h_status, _ = await self._get_html(self.page_url, origin, self.cookie, admin_token)
+            print(f"[HTML][{self.name}] {self.page_url} -> {h_status}")
+
+            a_status, a_body = await self._post_api(self.api_url, origin, self.page_url, self.cookie, self.payload)
+            print(f"[API ][{self.name}] {self.api_url} -> {a_status}")
+
+            if isinstance(a_body, dict):
+                code = str(a_body.get("code"))
+                if code == "0":
+                    if self.logged_out:
+                        await self.tg.send(f"✅ {self.name}: Oturum geri geldi (code 0).")
+                        self.logged_out = False
+                    await self._handle_rows(a_body)
+                elif code == "10004":
+                    if not self.logged_out:
+                        await self.tg.send(f"🔴 {self.name}: User is not logged in (10004). Cookie/URL/headers expired.")
+                        self.logged_out = True
+                else:
+                    await self.tg.send(f"⚠️ {self.name}: API code={code}, msg={a_body.get('msg')}")
+            else:
+                low = str(a_body).lower()
+                if not self.logged_out and (a_status in (401,403) or "not logged in" in low):
+                    await self.tg.send(f"🔴 {self.name}: Oturum geçersiz (HTTP {a_status}). Cookie/URL güncelleyin.")
+                    self.logged_out = True
+
+            await asyncio.sleep(POLL_SECONDS)
+
+# ----- Deposit mesajı -----
+def make_deposit_message(d: Dict[str, Any], emoji: str, title: str) -> str:
     try:
-        with p.open("r", encoding="utf-8") as f:
-            old_data = json.load(f)
+        ms = int(d.get("createdAt", 0))
     except Exception:
-        old_data = {}
+        ms = 0
+    dt = datetime.fromtimestamp(ms/1000) if ms else datetime.now()
+    tstr = fmt_tr(dt)
 
-    with requests.Session() as session:
-        try:
-            all_data = fetch_all_brackets_binance(session)
-        except Exception as e:
-            print(f"Binance risk limit verisi alınamadı: {e}", file=sys.stderr)
-            return
+    symbol = str(d.get("symbol", ""))
+    amount = str(d.get("amount", ""))
+    txid = str(d.get("txid", ""))
+    address_to = str(d.get("addressTo", ""))
+    usdt_amount = str(d.get("usdtAmount", ""))
+    uid = str(d.get("uid", ""))
+    status_desc = str(d.get("statusDesc", d.get("walletStatus", "")))
 
-    new_data = {}
-    for item in all_data or []:
-        sym = item.get("symbol")
-        if sym:
-            new_data[sym] = binance_brackets_to_tiers_entry(item)
+    lines = [
+        f"{emoji} {title}",
+        f"symbol: {symbol}",
+        f"amount: {amount}",
+        f"txid: {txid}",
+        f"addressTo: {address_to}",
+        f"usdtAmount: {usdt_amount}",
+        f"uid: {uid}",
+        f"statusDesc: {status_desc}",
+        f"time: {tstr}",
+    ]
+    coin_tx_url = str(d.get("coinTxUrl", "") or "")
+    if coin_tx_url and txid:
+        lines.append(f"txLink: {coin_tx_url}{txid}")
+    return "\n".join(lines)
 
-    any_changes = False
-    from itertools import zip_longest
-    for sym, new_tiers in new_data.items():
-        old_tiers = old_data.get(sym)
-        if old_tiers != new_tiers:
-            any_changes = True
-            now = datetime.utcnow() + timedelta(hours=2)
-            now_str = now.strftime("%H:%M:%S %d-%m-%Y (UTC+2)")
-            lines = [
-                "🔔 Risk Limit Güncellemesi",
-                "",
-                f"{sym}",
-                "",
-                f"⏱️ Saat: {now_str}",
-                "",
-                "Eski Risk Limitleri",
-            ]
-            for idx, (old, new) in enumerate(zip_longest(old_tiers or [], new_tiers or []), start=1):
-                lines.append(f"• Tier {idx}:")
-                old_lev = old.get("maxLever") if old else "-"
-                old_max = old.get("maxPositionValue") if old else "-"
-                old_min = old.get("minPositionValue") if old else "-"
-                old_mm = old.get("minMarginRate") if old else "-"
-                new_lev = new.get("maxLever") if new else "-"
-                new_max = new.get("maxPositionValue") if new else "-"
-                new_min = new.get("minPositionValue") if new else "-"
-                new_mm = new.get("minMarginRate") if new else "-"
-                lev_arrow = f" → {new_lev}" if old_lev != new_lev else ""
-                max_arrow = f" → {new_max}" if old_max != new_max else ""
-                min_arrow = f" → {new_min}" if old_min != new_min else ""
-                mm_arrow = f" → {new_mm}" if old_mm != new_mm else ""
-                lines.append(f"  - Leverage: {old_lev}{lev_arrow}")
-                lines.append(f"  - Max Notional: {old_max}{max_arrow}")
-                lines.append(f"  - Min Notional: {old_min}{min_arrow}")
-                lines.append(f"  - Maintenance Margin: {old_mm}{mm_arrow}")
-                lines.append("")
-            lines.append("🔄 Güncelleme Detayları:")
-            lines.append("")
-            lines.append("Yeni Risk Limitleri")
-            for idx, t in enumerate(new_tiers or [], start=1):
-                lines.append(f"• Tier {idx}:")
-                lines.append(f"  - Leverage: {t.get('maxLever')}")
-                lines.append(f"  - Max Notional: {t.get('maxPositionValue')}")
-                lines.append(f"  - Min Notional: {t.get('minPositionValue')}")
-                lines.append(f"  - Maintenance Margin: {t.get('minMarginRate')}")
-                lines.append("")
-            send_telegram_message("\n".join(line for line in lines).strip())
-
-    if not any_changes:
-        send_telegram_message("Risk limitleri kontrol edildi. Herhangi bir değişiklik yok.")
-
+# ----- Withdraw mesajı -----
+def make_withdraw_message(d: Dict[str, Any], emoji: str, title: str) -> str:
     try:
-        with p.open("w", encoding="utf-8") as f:
-            json.dump(new_data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Binance risk limit verisi kaydedilemedi: {e}", file=sys.stderr)
+        ms = int(d.get("createdAt", 0))
+    except Exception:
+        ms = 0
+    dt = datetime.fromtimestamp(ms/1000) if ms else datetime.now()
+    tstr = fmt_tr(dt)
 
+    symbol = str(d.get("symbol", ""))
+    usdt_amount = str(d.get("usdtAmount", ""))
+    txid = str(d.get("txid", ""))
+    address_to = str(d.get("addressTo", ""))
+    uid = str(d.get("uid", ""))
+    amount = str(d.get("amount", ""))
+    status_desc = str(d.get("statusDesc", ""))
 
-# ---------------------------
-# main
-# ---------------------------
-def main():
-    send_telegram_message("Bot başlatıldı")
-    threading.Thread(target=poll_telegram_commands, daemon=True).start()
-    
-    # 1) contract_id_mapping.xlsx varsa: Darkex tier -> ardından Binance tier yazdır.
-    mapping_file = find_contract_mapping_file()
-    if mapping_file is not None:
-        rows = load_contract_ids_from_excel(mapping_file)
-        if not rows:
-            print(f"{mapping_file} içinde işlenecek satır bulunamadı.", file=sys.stderr)
-            sys.exit(6)
+    lines = [
+        f"{emoji} {title}",
+        f"symbol: {symbol}",
+        f"usdtAmount: {usdt_amount}",
+        f"txid: {txid}",
+        f"addressTo: {address_to}",
+        f"uid: {uid}",
+        f"amount: {amount}",
+        f"statusDesc: {status_desc}",
+        f"time: {tstr}",
+    ]
+    coin_tx_url = str(d.get("coinTxUrl", "") or "")
+    if coin_tx_url and txid:
+        lines.append(f"txLink: {coin_tx_url}{txid}")
+    return "\n".join(lines)
 
-        # Binance (aynı semboller)
-        symbols = unique_symbols_in_order(rows)
-        if symbols:
-            pass
+async def main():
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
+        tg = Telegram(session, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+        await tg.send("🚀 Watcher’lar başlıyor (deposit + withdraw).")
 
-    else:
-        # 2) Excel yoksa: public_info -> Excel'e yaz ve Masaüstüne kaydet
-        ua_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        payload = {"uaTime": ua_time}
+        cc_page_fw = FileWatcher(CC_PAGE_URL_FILE, normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
+        cc_api_fw  = FileWatcher(CC_API_URL_FILE,  normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
 
-        try:
-            r = requests.post(URL, json=payload, headers=HEADERS, timeout=20)
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:
-            print(f"İstek hatası: {e}", file=sys.stderr)
-            sys.exit(1)
+        country_map = CountryMap(COUNTRY_MAP_CSV, COUNTRY_MAP_XLSX)
+        country_map.reload_if_changed()
 
-        if data.get("code") != "0":
-            print(f"API hata cevabı: {data}", file=sys.stderr)
-            sys.exit(2)
+        deposit = BaseWatcher(
+            name="Deposit",
+            api_url_file=DEPOSIT_API_URL_FILE,
+            page_url_file=DEPOSIT_PAGE_URL_FILE,
+            cookie_file=DEPOSIT_COOKIE_FILE,
+            payload_file=DEPOSIT_PAYLOAD_FILE,
+            state_file=DEPOSIT_STATE_FILE,
+            list_keys=["depositCryptoMapList", "depositList"],
+            header_emoji="🟢",
+            header_title="Yeni Deposit",
+            wanted_fields_fn=make_deposit_message,
+            cc_page_fw=cc_page_fw,
+            cc_api_fw=cc_api_fw,
+            country_map=country_map,
+        )
 
-        payload_data = data.get("data", {})
-        rows = extract_symbol_id(payload_data)
+        withdraw = BaseWatcher(
+            name="Withdraw",
+            api_url_file=WITHDRAW_API_URL_FILE,
+            page_url_file=WITHDRAW_PAGE_URL_FILE,
+            cookie_file=DEPOSIT_COOKIE_FILE,
+            payload_file=WITHDRAW_PAYLOAD_FILE,
+            state_file=WITHDRAW_STATE_FILE,
+            list_keys=["withdrawCryptoMapList", "withdrawList"],
+            header_emoji="🔴",
+            header_title="Yeni Withdraw",
+            wanted_fields_fn=make_withdraw_message,
+            cc_page_fw=cc_page_fw,
+            cc_api_fw=cc_api_fw,
+            country_map=country_map,
+        )
 
-        desktop = get_desktop_path()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"darkex_symbol_contracts_{timestamp}.xlsx"
-        save_path = desktop / filename
-
-        try:
-            save_to_excel(rows, save_path)
-            print(f"{len(rows)} satır Excel dosyasına yazıldı ve kaydedildi: {save_path}")
-        except Exception as e:
-            print(f"Excel yazma/kaydetme hatası: {e}", file=sys.stderr)
-            sys.exit(3)
-
-    while True:
-        try:
-            check_binance_tiers()
-        except Exception as e:
-            print(f"Binance tier check failed: {e}", file=sys.stderr)
-        time.sleep(1800)
-
-
+        await asyncio.gather(
+            deposit.run(session, tg),
+            withdraw.run(session, tg),
+        )
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
