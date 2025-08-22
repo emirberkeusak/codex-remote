@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# === Configuration (Sizin mevcut sabitleriniz korunmuştur) ===
+# === Configuration (Telegram güncellendi) ===
 TELEGRAM_BOT_TOKEN = "7895901821:AAEJs3mmWxiWrRyVKcRiAxMN2Rn4IpiyV0o"
 CHAT_ID            = "-4678220102"
 
@@ -45,7 +45,7 @@ CONTRACT_SIZE = {
     "USDT1791-ETH-USDT": 0.001,
 }
 
-# Emir kuyruğu (monitor_positions yalnızca buraya yazar)
+# Emir kuyruğu (monitor_positions yalnızca buraya yazar; MT5 yürütücü artık snapshot-otoriter)
 mt5_queue = queue.Queue()
 
 
@@ -55,7 +55,7 @@ def generate_signature(timestamp, method, request_path, body, secret_key):
     pre = timestamp + method.upper() + request_path + (body or "")
     import hmac, hashlib
     sig = hmac.new(secret_key.encode(), pre.encode(), hashlib.sha256).hexdigest()
-    # Darkex özel çift kaçış kullanıyordu; olduğu gibi koruyorum
+    # Darkex çift URL-escape istiyor; korunmuştur
     return requests.utils.quote(requests.utils.quote(sig))
 
 def get_futures_account_info():
@@ -136,7 +136,7 @@ def get_open_positions_df():
         for vo in acct.get("positionVos", []):
             cname = vo.get("contractName")
             for pos in vo.get("positions", []):
-                print(pos)  # mevcut davranışı koruyorum
+                print(pos)  # mevcut davranışı koruyoruz
                 vol = float(pos.get("volume", 0))
                 if vol <= 0:
                     continue
@@ -168,7 +168,6 @@ def init_mt5(login, password, server):
         raise RuntimeError(f"MT5 login failed: {mt5.last_error()}")
     logger.info("MT5 initialized and logged in")
 
-
 def volume_to_lots(darkex_symbol, contract_count):
     """
     Darkex kontrat sayısını MT5 lot'a çevirir:
@@ -199,15 +198,15 @@ def volume_to_lots(darkex_symbol, contract_count):
 
 
 # =========================================================
-#               EMİR GÖNDERİM YAPISI (YENİ)
+#           EMİR YÖNETİMİ — OTORİTER HEDEF EŞLEME
 # =========================================================
 
-# --- Parametreler: reconcile ve güvenlik ---
-_DRAIN_SECONDS       = 0.15   # mikro-batch koalesans penceresi
-_MAX_RETRY_SEND      = 2      # order_send retry
-_SLIPPAGE_PIPS       = 10     # deviation
-_CLOSE_DEBOUNCE_SEC  = 1.20   # Darkex "tam kapanış" sinyali için debounce
-_HYSTERESIS_STEP_FR  = 0.5    # step'in yarısı aşılmadan işlem yapma
+# --- Parametreler: snapshot, güvenlik, histerezis ---
+_SNAPSHOT_INTERVAL_SEC = 2.0   # Darkex snapshot sıklığı
+_MISS_CONFIRM_CYCLES   = 3     # Bir key üst üste bu kadar snapshot'ta yoksa gerçekten kapandı say
+_MAX_RETRY_SEND        = 2     # order_send retry
+_SLIPPAGE_PIPS         = 10    # deviation
+_HYSTERESIS_STEP_FR    = 0.5   # step/2 altı farkları yok say
 
 def _mt5_select_all_symbols():
     for s in SYMBOL_MAP.values():
@@ -216,11 +215,8 @@ def _mt5_select_all_symbols():
         except Exception:
             pass
 
-def _poskey_from_dict(pos_dict):
-    return f"{pos_dict['contractName']}|{pos_dict['side']}"
-
 def _mt5_positions_by_side(mt5_symbol, side):
-    """MT5'ten mevcut pozisyonları (hedging modunda birden fazla olabilir) getirir."""
+    """MT5’ten mevcut pozisyonları (hedging modunda birden fazla olabilir) getirir."""
     all_pos = mt5.positions_get(symbol=mt5_symbol) or []
     if side == "BUY":
         return [p for p in all_pos if p.type == mt5.POSITION_TYPE_BUY]
@@ -297,7 +293,7 @@ def _close_from_positions(mt5_symbol, side, lots_to_close, comment):
             "symbol":       mt5_symbol,
             "volume":       use,
             "type":         mt5.ORDER_TYPE_SELL if side == "BUY" else mt5.ORDER_TYPE_BUY,
-            "position":     p.ticket,  # DOĞRU: kapanışlar position ticket ile yapılır
+            "position":     p.ticket,  # DOĞRU: kapanış position ticket ile yapılır
             "price":        price,
             "deviation":    _SLIPPAGE_PIPS,
             "magic":        123456,
@@ -342,83 +338,86 @@ def _telegram_confirm_close(darkex_symbol, side, lots_closed):
 
 def mt5_executor():
     """
-    Hedefe Eşitleme (Target-based Reconcile) + Debounce + Histerezis
-
-    - monitor_positions yalnızca 'open'/'close' olayları koyar.
-    - Burada olayları toplayıp (150ms) her (symbol, side) için 'istenen KONTRAT' sayısını güncelliyoruz.
-    - Daha sonra MT5'te mevcut toplam lotu okuyup hedef lota tek hamlede yaklaştırıyoruz.
-    - Darkex kapatmadığı sürece KAPANIŞ yapılmaz (yalnızca increase -> open).
-    - Darkex 'tam kapanış' sinyali (k not in curr) debounce edilir (1.2s).
+    OTORİTER HEDEF EŞLEME:
+      - Darkex snapshot'ı periyodik alınır, (symbol, side) → desired_contracts_auth belirlenir.
+      - Bir pozisyonun kapandığına ancak ardışık _MISS_CONFIRM_CYCLES snapshot’ta görülmezse inanılır.
+      - MT5’teki toplam lot, hedef lota tek hamlede yaklaştırılır (histerezis: step/2 altında işlem yok).
+      - Monitor'den gelen kuyruk olayları sadece “uyandırıcı” niteliğinde; asıl kaynak snapshot’tır.
     """
     _mt5_select_all_symbols()
 
+    # Otoriter hedefler (Darkex’e göre): key=(darkex_symbol, side) → kontrat
+    desired_contracts_auth = defaultdict(float)
+    # "Görünmeme sayacı": transient kayıplarda kapanış yapmamak için
+    miss_counts = defaultdict(int)
+
+    next_snapshot = 0.0
+
+    # Thread-safety için sembol-yanı kilitleri (eşzamanlı emir çakışmasını önler)
     inflight = defaultdict(lambda: threading.Lock())
 
-    # İstenen hedef kontratlar (Darkex’e göre tutulan gölge state)
-    desired_contracts = defaultdict(float)  # key: (darkex_symbol, side) → kontrat
-    # Tam kapanış debounce bekleyenler: key → (expiry_ts, contracts_requested_close)
-    pending_full_close = {}
-
     while True:
-        # -------- 1) Mikro-batch: olayları topla/koalesce et --------
-        start = time.time()
-        batched = defaultdict(float)  # key → (+/- kontrat delta)
-        first_evt = None
+        # 1) Kuyruktan bir şey gelirse sadece uyanık kal (snapshot yine belirleyici)
         try:
-            first_evt = mt5_queue.get(timeout=0.50)
+            _ = mt5_queue.get(timeout=_SNAPSHOT_INTERVAL_SEC / 3.0)
         except queue.Empty:
-            # süreklilik için reconcile döngüsüne yine gireceğiz
             pass
-
-        if first_evt:
-            k = (first_evt['symbol'], first_evt['side'])
-            batched[k] += first_evt['contracts'] if first_evt['action'] == 'open' else -first_evt['contracts']
-
-        while (time.time() - start) < _DRAIN_SECONDS:
-            try:
-                evt = mt5_queue.get_nowait()
-                k = (evt['symbol'], evt['side'])
-                batched[k] += evt['contracts'] if evt['action'] == 'open' else -evt['contracts']
-            except queue.Empty:
-                break
 
         now = time.time()
 
-        # -------- 2) Batch’i desired_contracts’a uygula (close debounce ile) --------
-        for k, delta_contracts in batched.items():
-            if abs(delta_contracts) <= 0:
-                continue
+        # 2) Darkex snapshot: authoritative hedefleri güncelle
+        if now >= next_snapshot:
+            next_snapshot = now + _SNAPSHOT_INTERVAL_SEC
 
-            # Mevcut istek (kontrat) seviyesi
-            curr_desired = desired_contracts[k]
+            try:
+                df = get_open_positions_df()
+            except Exception as e:
+                logger.error("Darkex snapshot error: %s", e)
+                df = pd.DataFrame()
 
-            if delta_contracts > 0:
-                # Artış → hemen uygula, varsa bekleyen tam kapanışı iptal et
-                desired_contracts[k] = curr_desired + delta_contracts
-                if k in pending_full_close:
-                    del pending_full_close[k]
-            else:
-                # Azalış
-                dec = -delta_contracts
-                if dec + 1e-12 >= curr_desired:
-                    # Tam kapanış isteği → debounce
-                    pending_full_close[k] = (now + _CLOSE_DEBOUNCE_SEC, curr_desired)
-                    # Şimdilik desired’ı düşürmüyoruz; confirm bekleniyor
-                else:
-                    # Kısmi azalış → hemen uygula
-                    desired_contracts[k] = max(0.0, curr_desired - dec)
+            seen = set()
+            if not df.empty:
+                for _, r in df.iterrows():
+                    darkex_symbol = r["contractName"]
+                    side          = r["side"]
+                    vol_ct        = float(r["volume"])
+                    key = (darkex_symbol, side)
+                    desired_contracts_auth[key] = max(0.0, vol_ct)
+                    miss_counts[key] = 0  # görüldü
+                    seen.add(key)
 
-        # Debounce süresi dolan tam kapanışları uygula
-        to_apply_zero = []
-        for k, (exp_ts, _amt) in list(pending_full_close.items()):
-            if now >= exp_ts:
-                to_apply_zero.append(k)
-        for k in to_apply_zero:
-            desired_contracts[k] = 0.0
-            del pending_full_close[k]
+            # Snapshot’ta görülmeyen anahtarlar için miss say
+            for key in list(desired_contracts_auth.keys()):
+                if key not in seen:
+                    miss_counts[key] += 1
+                    # ancak yeterince yoksa eski hedefi koru (kapanmış sayma)
+                    if miss_counts[key] >= _MISS_CONFIRM_CYCLES:
+                        desired_contracts_auth[key] = 0.0
 
-        # -------- 3) Reconcile: her anahtar için MT5 lotunu hedefe yaklaştır --------
-        for (darkex_symbol, side), desired_ct in list(desired_contracts.items()):
+        # 3) Reconcile: her anahtar için MT5 lotunu target’a yaklaştır
+        #    Ayrıca MT5’te kalmış "yetim" pozisyonlar için de 0 hedef uygulanır
+        keys_to_handle = set(desired_contracts_auth.keys())
+
+        # MT5’te var olup auth’ta hiç olmayanlar → miss_counts onlara da işlesin
+        for d_sym, mt5_sym in SYMBOL_MAP.items():
+            for side in ("BUY", "SELL"):
+                positions = _mt5_positions_by_side(mt5_sym, side)
+                if positions:
+                    k = (d_sym, side)
+                    if k not in desired_contracts_auth:
+                        # Bu anahtar hiç otoriter hedef set edilmemişse,
+                        # “0 hedef” kabul edelim ama transient kapanış riskine karşı
+                        # miss confirm koşulunu uygularız:
+                        if k not in miss_counts:
+                            miss_counts[k] = 1
+                            desired_contracts_auth[k] = 0.0
+                        else:
+                            miss_counts[k] += 1
+                            if miss_counts[k] >= _MISS_CONFIRM_CYCLES:
+                                desired_contracts_auth[k] = 0.0
+                        keys_to_handle.add(k)
+
+        for (darkex_symbol, side) in list(keys_to_handle):
             mt5_symbol = SYMBOL_MAP.get(darkex_symbol)
             if not mt5_symbol:
                 continue
@@ -434,7 +433,7 @@ def mt5_executor():
                     continue
 
                 # Hedef LOT
-                target_lots = volume_to_lots(darkex_symbol, desired_ct)
+                target_lots = volume_to_lots(darkex_symbol, desired_contracts_auth[(darkex_symbol, side)])
 
                 # Mevcut LOT (toplam, aynı side)
                 curr_lots = _current_side_volume(mt5_symbol, side)
@@ -445,8 +444,8 @@ def mt5_executor():
                 if abs(diff) < max(step * _HYSTERESIS_STEP_FR, 0.0):
                     continue
 
-                # İşlem LOT’u step’e yuvarla
                 if diff > 0:
+                    # ↑ Açılış
                     lots_to_open = math.ceil(diff / step) * step
                     ok, res = _send_mt5_market(mt5_symbol, side, lots_to_open, "Darkex mirror open")
                     if ok:
@@ -459,11 +458,11 @@ def mt5_executor():
                         logger.error("Open failed %s %s: %s", mt5_symbol, side, res)
 
                 else:
-                    # close path: Darkex azalış/kapama olmadan buraya düşmeyeceğiz,
-                    # çünkü desired_ct azalmadıysa diff negatif olmayacaktır.
+                    # ↓ Kapatış — SADECE otoriter hedef 0’a (veya düşmüş hedefe) işaret ediyorsa
                     lots_to_close_req = math.ceil((-diff) / step) * step
-                    # güvenlik: mevcut kadar ile sınırla
-                    lots_to_close_req = min(lots_to_close_req, curr_lots)
+                    lots_to_close_req = min(lots_to_close_req, curr_lots)  # güvenlik
+
+                    # Miss confirm sağlanmadan desired 0 olmaz; bu nedenle burada kapama güvenli
                     closed_lots, remaining_lots = _close_from_positions(
                         mt5_symbol, side, lots_to_close_req, "Darkex mirror close"
                     )
@@ -494,7 +493,7 @@ def monitor_positions(poll_interval=10):
             df = get_open_positions_df()
             curr = { _pos_key(r): r for _, r in df.iterrows() }
 
-            # Yeni veya artan pozisyonlar → open delta
+            # Yeni veya artan pozisyonlar → open delta (bilgi amaçlı; yürütme snapshot-otoriter)
             for k, pos in curr.items():
                 cnt = pos['volume']  # Darkex kontrat sayısı
                 if k not in prev:
@@ -535,7 +534,7 @@ def monitor_positions(poll_interval=10):
                             'action':    'close'
                         })
 
-            # Tam kapanan pozisyonlar → full close
+            # Tam kapanan pozisyonlar → full close (bilgi amaçlı; yürütme snapshot-otoriter)
             for k, pos in prev.items():
                 if k not in curr:
                     cnt = pos['volume']
