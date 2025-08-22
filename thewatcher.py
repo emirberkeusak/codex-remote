@@ -205,13 +205,16 @@ def save_state(state_file: str, state: Dict) -> None:
 def epoch_ms_to_local_iso(ms: int) -> str:
     try:
         dt = datetime.fromtimestamp(ms / 1000, tz=None).astimezone()
-        return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+        # Zaman dilimi adını kaldırdık
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         try:
+            # Fallback: UTC sadece tarih-saat
             dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
-            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             return str(ms)
+
 
 def build_telegram_message(deposit: Dict) -> str:
     symbol = str(deposit.get("symbol", "-"))
