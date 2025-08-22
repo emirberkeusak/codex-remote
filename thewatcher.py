@@ -1,626 +1,483 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-import argparse
-import atexit
-import json
-import logging
-import os
-import signal
-import sys
-import threading
 import time
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
-
+import threading
+import queue
+import logging
+import math
+from urllib.parse import urlencode
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
+import pandas as pd
+import MetaTrader5 as mt5
 
-# =========================
-# Varsayılan Ayarlar
-# =========================
-DEFAULT_BASE_URL = "https://e38ce8fd14d3d5a75199844a241806d4.chainupcloud.info"
-DEPOSIT_API_ENDPOINT = f"{DEFAULT_BASE_URL}/admin-api/depositCrypto"
-KEEPALIVE_PAGE_URL = f"{DEFAULT_BASE_URL}/depositCrypto"
-TARGET_COOKIE_DOMAIN = "chainupcloud.info"  # tarayıcıdan çekerken filtre
+# --- Logging setup ---
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Telegram — CLI ile de geçebilirsiniz
-DEFAULT_TELEGRAM_BOT_TOKEN = "7895901821:AAEJs3mmWxiWrRyVKcRiAxMN2Rn4IpiyV0o"  # CLI --token ile verin
-DEFAULT_TELEGRAM_CHAT_ID = "-4678220102"    # CLI --chat-id ile verin
-DEFAULT_TELEGRAM_THREAD_ID: Optional[int] = None  # opsiyonel
+# === Configuration ===
+TELEGRAM_BOT_TOKEN = "8082196969:AAEol89om4b0LNIzWebTLOBXg1j4MW_19DA"
+CHAT_ID            = "-4847294401"
 
-# Poll aralığı
-POLL_INTERVAL_SECONDS = 60
-REQUEST_TIMEOUT = 15
+DARKEX_API_KEY     = "cb658cb61b423d35be9bf855e21a34e7"
+DARKEX_SECRET_KEY  = "638beeeb2ac75e229cf716202fc8da6c"
+DARKEX_BASE_URL    = "https://futuresopenapi.darkex.com"
 
-# Retry
-RETRY_TOTAL = 5
-RETRY_BACKOFF_FACTOR = 0.6
-RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
-RETRY_ALLOWED_METHODS = frozenset(["GET", "POST"])
+MT5_LOGIN     =  810005950
+MT5_PASSWORD  = "nDGbT_4O"
+MT5_SERVER    = "Taurex-Demo"
+MT5_LEVERAGE  = 1
 
-# State & Log
-STATE_FILE = "state.json"
-LOG_FILE = "deposit_watcher.log"
-LOG_LEVEL = logging.INFO
-LOG_MAX_BYTES = 5 * 1024 * 1024
-LOG_BACKUP_COUNT = 3
+# Darkex symbol → MT5 symbol
+SYMBOL_MAP = {
+    "USDT1791-BTC-USDT": "BTCUSD",
+    "USDT1791-ETH-USDT": "ETHUSD",
+}
 
-stop_event = threading.Event()
-cookie_file_mtime: Optional[float] = None
-raw_cookie_header: str = ""  # "name=value; ..." biçiminde
-auto_cookie_source: Optional[str] = None  # edge|chrome|firefox|brave|opera
+# Darkex kontrat başına baz varlık miktarı
+# Darkex GUI'de Contract Size=0.001 BTC diyorsa 0.001 bırakın
+CONTRACT_SIZE = {
+    "USDT1791-BTC-USDT": 0.001,
+    "USDT1791-ETH-USDT": 0.001,
+}
 
-def setup_logging() -> None:
-    from logging.handlers import RotatingFileHandler
-    logger = logging.getLogger()
-    logger.setLevel(LOG_LEVEL)
-    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", "%Y-%m-%d %H:%M:%S")
-    ch = logging.StreamHandler(sys.stdout); ch.setLevel(LOG_LEVEL); ch.setFormatter(fmt); logger.addHandler(ch)
-    fh = RotatingFileHandler(LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8")
-    fh.setLevel(LOG_LEVEL); fh.setFormatter(fmt); logger.addHandler(fh)
+mt5_queue = queue.Queue()
 
-def load_cookies_from_file(cookie_file: str) -> Tuple[Dict[str, str], str]:
-    if not os.path.exists(cookie_file):
-        raise FileNotFoundError(f"Cookie dosyası yok: {cookie_file}")
-    with open(cookie_file, "r", encoding="utf-8") as f:
-        data = f.read().strip()
-    if data.lower().startswith("cookie:"):
-        data = data[len("cookie:"):].strip()
-    # normalize
-    data = " ".join(line.strip() for line in data.splitlines())
-    data = data.replace("; ", ";").strip().strip(";")
-    cookie_dict: Dict[str, str] = {}
-    if data:
-        for part in data.split(";"):
-            part = part.strip()
-            if not part or "=" not in part:
+
+# === DARKEX REST helpers ===
+
+def generate_signature(timestamp, method, request_path, body, secret_key):
+    pre = timestamp + method.upper() + request_path + (body or "")
+    import hmac, hashlib
+    sig = hmac.new(secret_key.encode(), pre.encode(), hashlib.sha256).hexdigest()
+    return requests.utils.quote(requests.utils.quote(sig))
+
+def get_futures_account_info():
+    path = "/fapi/v1/account"
+    ts   = str(int(time.time() * 1000))
+    sig  = generate_signature(ts, "GET", path, "", DARKEX_SECRET_KEY)
+    headers = {
+        "X-CH-APIKEY": DARKEX_API_KEY,
+        "X-CH-TS":     ts,
+        "Content-Type":"application/json",
+        "X-CH-SIGN":   sig
+    }
+    r = requests.get(DARKEX_BASE_URL + path, headers=headers, timeout=10)
+    logger.info("Futures Account Info: %s %s", r.status_code, r.text)
+    return r.json()
+
+def get_futures_account_info_df():
+    try:
+        data = get_futures_account_info()
+        if "account" in data and isinstance(data["account"], list):
+            return pd.DataFrame(data["account"])
+    except Exception as e:
+        logger.error("get_futures_account_info_df error: %s", e)
+    return pd.DataFrame()
+
+def get_futures_account_balance_df():
+    try:
+        df = get_futures_account_info_df()
+        if not df.empty and "totalEquity" in df.columns:
+            return df[["totalEquity"]]
+    except Exception as e:
+        logger.error("get_futures_account_balance_df error: %s", e)
+    return pd.DataFrame()
+
+def get_open_orders_df(contract_name=None):
+    try:
+        path = "/fapi/v1/openOrders"
+        params = {}
+        if contract_name:
+            params["contractName"] = contract_name
+        qs  = "?" + urlencode(params) if params else ""
+        ts  = str(int(time.time() * 1000))
+        sig = generate_signature(ts, "GET", path + qs, "", DARKEX_SECRET_KEY)
+        headers = {
+            "X-CH-APIKEY": DARKEX_API_KEY,
+            "X-CH-TS":     ts,
+            "Content-Type":"application/json",
+            "X-CH-SIGN":   sig
+        }
+        r = requests.get(DARKEX_BASE_URL + path, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        if "status" in df.columns:
+            df = df[df["status"] != "PENDING_CANCEL"]
+        return df
+    except Exception as e:
+        logger.error("get_open_orders_df error: %s", e)
+        return pd.DataFrame()
+
+def get_open_positions_df():
+    path = "/fapi/v1/account"
+    ts   = str(int(time.time() * 1000))
+    sig  = generate_signature(ts, "GET", path, "", DARKEX_SECRET_KEY)
+    headers = {
+        "X-CH-APIKEY": DARKEX_API_KEY,
+        "X-CH-TS":     ts,
+        "Content-Type":"application/json",
+        "X-CH-SIGN":   sig
+    }
+    r = requests.get(DARKEX_BASE_URL + path, headers=headers, timeout=10)
+    r.raise_for_status()
+    acct_list = r.json().get("account", [])
+    rows = []
+    for acct in acct_list:
+        for vo in acct.get("positionVos", []):
+            cname = vo.get("contractName")
+            for pos in vo.get("positions", []):
+                print(pos)
+                vol = float(pos.get("volume", 0))
+                if vol <= 0:
+                    continue
+                rows.append({
+                    "contractName": cname,
+                    "side":         pos.get("side"),
+                    "volume":       vol,           # Darkex kontrat sayısı
+                    "openPrice":    float(pos.get("openPrice", 0)),
+                    "uPnL":         float(pos.get("unRealizedAmount", 0)),
+                })
+    return pd.DataFrame(rows)
+
+def send_text_to_telegram(token, chat_id, text):
+    url  = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = {"chat_id": chat_id, "text": text}
+    try:
+        r = requests.post(url, data=data, timeout=5)
+        r.raise_for_status()
+    except Exception as e:
+        logger.error("Telegram send failed: %s", e)
+
+
+# === MT5 Integration ===
+
+def init_mt5(login, password, server):
+    if not mt5.initialize():
+        raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
+    if not mt5.login(login, password, server):
+        raise RuntimeError(f"MT5 login failed: {mt5.last_error()}")
+    logger.info("MT5 initialized and logged in")
+
+
+def volume_to_lots(darkex_symbol, contract_count):
+    """
+    Darkex kontrat sayısını MT5 lot'a çevirir:
+      raw_lots = contract_count * Darkex_contract_size * MT5_LEVERAGE
+                 / MT5_contract_size
+    Sonra yukarı yuvarla (ceil) ve step/min kurallarına uydur.
+    """
+    mt5_sym = SYMBOL_MAP.get(darkex_symbol)
+    if not mt5_sym:
+        raise ValueError(f"Mapping bulunamadı: {darkex_symbol}")
+
+    info = mt5.symbol_info(mt5_sym)
+    if info is None:
+        raise RuntimeError(f"MT5 symbol_info yüklenemedi: {mt5_sym}")
+
+    darkex_ct_size = CONTRACT_SIZE[darkex_symbol]
+    mt5_ct_size    = info.trade_contract_size
+    lev            = MT5_LEVERAGE
+
+    raw_lots = contract_count * darkex_ct_size * lev / mt5_ct_size
+
+    step    = info.volume_step
+    vol_min = info.volume_min
+    lots    = math.ceil(raw_lots / step) * step
+    if lots < vol_min:
+        lots = vol_min
+
+    return lots
+
+
+def mt5_executor():
+    for s in SYMBOL_MAP.values():
+        mt5.symbol_select(s, True)
+
+    mt5_tickets = {}
+    while True:
+        evt = mt5_queue.get()
+        sym = SYMBOL_MAP[evt['symbol']]
+
+        if evt['action'] == 'open':
+            cnt  = evt['contracts']
+            lots = volume_to_lots(evt['symbol'], cnt)
+            tick = mt5.symbol_info_tick(sym)
+            price = tick.ask if evt['side'] == "BUY" else tick.bid
+
+            req = {
+                "action":       mt5.TRADE_ACTION_DEAL,
+                "symbol":       sym,
+                "volume":       lots,
+                "type":         mt5.ORDER_TYPE_BUY if evt['side']=="BUY" else mt5.ORDER_TYPE_SELL,
+                "price":        price,
+                "deviation":    10,
+                "magic":        123456,
+                "comment":      "Darkex open",
+                "type_time":    mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            res = mt5.order_send(req)
+            if res.retcode == mt5.TRADE_RETCODE_DONE:
+                key = f"{evt['symbol']}|{evt['side']}"
+                mt5_tickets.setdefault(key, []).append(res.order)
+                logger.info("MT5 opened ticket=%s lots=%.4f", res.order, lots)
+            else:
+                logger.error("MT5 open failed: %s", res)
+
+        else:  # close
+            rem_contracts = evt['contracts']
+            key = f"{evt['symbol']}|{evt['side']}"
+            tickets = mt5_tickets.get(key, [])
+            if not tickets:
+                logger.error("No tickets to close for %s", key)
                 continue
-            k, v = part.split("=", 1)
-            cookie_dict[k.strip()] = v.strip()
-    return cookie_dict, data
 
-def _get_cookie_val(cd: Dict[str, str], *keys: str, default: str = "") -> str:
-    for k in keys:
-        if k in cd and cd[k]:
-            return cd[k]
-    return default
+            info = mt5.symbol_info(sym)
+            lev  = MT5_LEVERAGE
 
-def build_session(cookie_dict: Dict[str, str]) -> requests.Session:
-    """
-    Session + retry kur; hem cookie jar’a yükle hem de kritik admin header’ları set et.
-    """
-    sess = requests.Session()
-    retry = Retry(total=RETRY_TOTAL, backoff_factor=RETRY_BACKOFF_FACTOR,
-                  status_forcelist=RETRY_STATUS_FORCELIST, allowed_methods=RETRY_ALLOWED_METHODS,
-                  raise_on_status=False)
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
-    sess.mount("http://", adapter); sess.mount("https://", adapter)
+            new_list = []
+            tick = mt5.symbol_info_tick(sym)
+            for ticket in tickets:
+                if rem_contracts <= 0:
+                    new_list.append(ticket)
+                    continue
 
-    # Cookie jar
-    sess.cookies.clear()
-    for k, v in cookie_dict.items():
-        sess.cookies.set(k, v, domain="e38ce8fd14d3d5a75199844a241806d4.chainupcloud.info")
+                pos = next((p for p in mt5.positions_get(symbol=sym) if p.ticket == ticket), None)
+                if not pos:
+                    continue
 
-    # Header bileşenleri
-    csrf_token = _get_cookie_val(cookie_dict, "csrfToken", "csrftoken", default="")
-    admin_token = _get_cookie_val(cookie_dict, "admin-token", default="")
-    admin_broker = _get_cookie_val(cookie_dict, "admin-broker-id-co", default="")
-    admin_source = _get_cookie_val(cookie_dict, "admin-source", default="admin")
-    lan = _get_cookie_val(cookie_dict, "lan", default="en_US")
-    servicelang = _get_cookie_val(cookie_dict, "servicelanguage", default="en-US")
-    admin_language = _get_cookie_val(cookie_dict, "admin-language", default=lan)
-    swap_broker_id = _get_cookie_val(cookie_dict, "swap-broker-Id", default="")
+                darkex_ct_size = CONTRACT_SIZE[evt['symbol']]
+                mt5_ct_size    = info.trade_contract_size
+                available_contracts = pos.volume * mt5_ct_size / darkex_ct_size / lev
+                to_close = min(rem_contracts, available_contracts)
 
-    common_headers = {
-        # Tarayıcıya benzer başlıklar
-        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"),
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json;charset=UTF-8",
-        "Origin": DEFAULT_BASE_URL,
-        "Referer": KEEPALIVE_PAGE_URL,
-        "Accept-Language": f"{servicelang},en;q=0.9",
-        "X-Requested-With": "XMLHttpRequest",
+                lots = volume_to_lots(evt['symbol'], to_close)
+                lots = min(lots, pos.volume)
 
-        # Admin uçlarının beklediği spesifik başlıklar
-        "admin-token": admin_token,
-        "admin-broker-id-co": admin_broker,
-        "admin-source": admin_source,
-        "lan": lan,
-        "servicelanguage": servicelang,
-        "admin-language": admin_language,
-        "swap-broker-Id": swap_broker_id,
+                close_type = mt5.ORDER_TYPE_SELL if evt['side']=="BUY" else mt5.ORDER_TYPE_BUY
+                price      = tick.bid if close_type==mt5.ORDER_TYPE_SELL else tick.ask
 
-        # Bazı sistemlerde isim duyarlı olabilir
-        "csrfToken": csrf_token,
-        "X-CSRF-Token": csrf_token,
-    }
-    # Boşları ayıkla
-    for k in list(common_headers.keys()):
-        if common_headers[k] is None or common_headers[k] == "":
-            common_headers.pop(k, None)
-
-    sess.headers.update(common_headers)
-    return sess
-
-def _api_headers() -> Dict[str, str]:
-    """
-    Her POST/GET çağrısında ham Cookie’yi ve XMLHttpRequest işaretini garantiye al.
-    Session.headers zaten diğer admin başlıklarını içeriyor.
-    """
-    return {
-        "Cookie": raw_cookie_header,
-        "X-Requested-With": "XMLHttpRequest",
-    }
-
-def try_keepalive(sess: requests.Session) -> None:
-    """
-    Oturumu sıcak tutmak için UI sayfasına GET at.
-    """
-    try:
-        r = sess.get(KEEPALIVE_PAGE_URL, timeout=REQUEST_TIMEOUT, headers={"Cookie": raw_cookie_header})
-        if r.status_code == 401:
-            logging.warning("Keepalive 401: oturum düşmüş olabilir.")
-    except Exception as e:
-        logging.debug(f"Keepalive hata: {e}")
-
-def fetch_deposits(sess: requests.Session) -> List[Dict]:
-    """
-    Admin API’den en güncel deposit kayıtlarını çek.
-    """
-    payload = {"page": 1, "size": 200, "pageSize": 200, "limit": 200}
-    resp = sess.post(DEPOSIT_API_ENDPOINT, json=payload, timeout=REQUEST_TIMEOUT, headers=_api_headers())
-    if resp.status_code == 401:
-        raise PermissionError("401 Unauthorized (cookie/oturum).")
-    resp.raise_for_status()
-    data = resp.json()
-    code = data.get("code")
-    ok_code = (code == "0" or code == 0)
-    if not ok_code:
-        raise ValueError(f"API 'code' başarısız: {code}, msg={data.get('msg')}")
-    inner = data.get("data") or {}
-    lst = inner.get("depositCryptoMapList") or []
-    if not isinstance(lst, list):
-        raise ValueError("depositCryptoMapList beklenmedik tip")
-    return lst
-
-def load_state(state_file: str) -> Dict:
-    if not os.path.exists(state_file):
-        return {"processed_ids": [], "last_seen_created_at": 0, "bootstrap_done": False}
-    try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {"processed_ids": [], "last_seen_created_at": 0, "bootstrap_done": False}
-
-def save_state(state_file: str, state: Dict) -> None:
-    tmp = state_file + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, state_file)
-
-def epoch_ms_to_local_iso(ms: int) -> str:
-    try:
-        dt = datetime.fromtimestamp(ms / 1000, tz=None).astimezone()
-        # Zaman dilimi adını kaldırdık
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        try:
-            # Fallback: UTC sadece tarih-saat
-            dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return str(ms)
-
-
-def build_telegram_message(deposit: Dict) -> str:
-    symbol = str(deposit.get("symbol", "-"))
-    amount = str(deposit.get("amount", "-"))
-    usdt_amount = str(deposit.get("usdtAmount", "-"))
-    uid = str(deposit.get("uid", "-"))
-    status_desc = str(deposit.get("statusDesc", "-"))
-    created_at = int(deposit.get("createdAt", 0) or 0)
-    when_str = epoch_ms_to_local_iso(created_at) if created_at else "-"
-    country_code = str(deposit.get("countryCode") or deposit.get("country_code") or deposit.get("country") or "-")
-    return "\n".join([
-        "🟢 Yeni Deposit",
-        "",
-        f"symbol: {symbol}",
-        f"amount: {amount}",
-        "",
-        f"usdtAmount: {usdt_amount}",
-        f"uid: {uid}",
-        f"statusDesc: {status_desc}",
-        f"time: {when_str}",
-        f"countryCode: {country_code}",
-    ])
-
-def send_telegram_message(bot_token: str, chat_id: str, text: str,
-                          thread_id: Optional[int] = None,
-                          disable_web_page_preview: bool = True) -> bool:
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": disable_web_page_preview}
-    if thread_id is not None:
-        payload["message_thread_id"] = int(thread_id)
-    try:
-        r = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
-        if r.status_code != 200:
-            logging.error(f"Telegram hata kodu: {r.status_code} - {r.text}")
-            return False
-        j = r.json()
-        if not j.get("ok", False):
-            logging.error(f"Telegram 'ok': False -> {j}")
-            return False
-        return True
-    except Exception as e:
-        logging.error(f"Telegram gönderim hatası: {e}")
-        return False
-
-def bootstrap_state_with_current_list(state: Dict, deposits: List[Dict]) -> Dict:
-    if not deposits:
-        state["bootstrap_done"] = True; save_state(STATE_FILE, state); return state
-    try:
-        max_created = max(int(x.get("createdAt", 0) or 0) for x in deposits)
-    except Exception:
-        max_created = 0
-    initial_ids = []
-    for item in deposits[:1000]:
-        _id = item.get("id")
-        try:
-            initial_ids.append(int(_id))
-        except Exception:
-            initial_ids.append(str(_id))
-    deduped, seen = [], set()
-    for _id in initial_ids:
-        if _id in seen: continue
-        seen.add(_id); deduped.append(_id)
-    state["processed_ids"] = deduped[-5000:]
-    state["last_seen_created_at"] = max_created
-    state["bootstrap_done"] = True
-    save_state(STATE_FILE, state)
-    return state
-
-def detect_new_deposits(state: Dict, deposits: List[Dict]) -> List[Dict]:
-    last_seen_created = int(state.get("last_seen_created_at", 0) or 0)
-    processed_ids = set(state.get("processed_ids", []))
-    candidates: List[Dict] = []
-    for item in deposits:
-        _id = item.get("id")
-        created_at = int(item.get("CreatedAt", item.get("createdAt", 0)) or 0)  # CreatedAt guard
-        try:
-            normalized_id = int(_id)
-        except Exception:
-            normalized_id = str(_id)
-        is_new_by_id = normalized_id not in processed_ids
-        is_new_by_time = created_at > last_seen_created
-        if is_new_by_id or is_new_by_time:
-            candidates.append(item)
-    candidates.sort(key=lambda x: int(x.get("createdAt", 0) or 0))
-    return candidates
-
-def update_state_after_send(state: Dict, sent_items: List[Dict]) -> Dict:
-    if not sent_items: return state
-    processed_ids = state.get("processed_ids", [])
-    last_seen_created = int(state.get("last_seen_created_at", 0) or 0)
-    for item in sent_items:
-        _id = item.get("id")
-        created_at = int(item.get("createdAt", 0) or 0)
-        try:
-            normalized_id = int(_id)
-        except Exception:
-            normalized_id = str(_id)
-        processed_ids.append(normalized_id)
-        if created_at > last_seen_created:
-            last_seen_created = created_at
-    if len(processed_ids) > 6000:
-        processed_ids = processed_ids[-5000:]
-    state["processed_ids"] = processed_ids
-    state["last_seen_created_at"] = last_seen_created
-    save_state(STATE_FILE, state)
-    return state
-
-def handle_signals():
-    def _handler(signum, frame):
-        logging.info(f"Sinyal alındı ({signum}). Bot durduruluyor...")
-        stop_event.set()
-    signal.signal(signal.SIGINT, _handler)
-    signal.signal(signal.SIGTERM, _handler)
-
-def _compose_cookie_header_from_items(items: List[Tuple[str, str]]) -> str:
-    """
-    Önemli anahtarları öne alarak deterministik 'Cookie' header’ı üret.
-    """
-    # Önceliklendirilmiş anahtarlar
-    priority = [
-        "JSESSIONID",
-        "admin-token",
-        "admin-broker-id-co",
-        "csrfToken",
-        "lan",
-        "servicelanguage",
-        "admin-language",
-        "admin-source",
-        "swap-broker-Id",
-        "other_lan",
-        "info",
-        "isShowDownLoadDialogEntrustedQuery",
-        "isShowDownLoadDialogAssetsQuery",
-    ]
-    # map
-    d: Dict[str, str] = {}
-    for k, v in items:
-        if not k or v is None: continue
-        d[k] = v
-    # sırala
-    ordered: List[str] = []
-    seen = set()
-    for k in priority:
-        if k in d and k not in seen:
-            ordered.append(f"{k}={d[k]}")
-            seen.add(k)
-    for k, v in d.items():
-        if k in seen: continue
-        ordered.append(f"{k}={v}")
-        seen.add(k)
-    return "; ".join(ordered)
-
-def _read_cookies_from_browser(domain_filter: str, source: str) -> Optional[str]:
-    """
-    browser-cookie3 ile tarayıcıdan cookie oku, hedef domain için header’a çevir.
-    source: edge|chrome|firefox|brave|opera
-    """
-    try:
-        import browser_cookie3 as bc3
-    except Exception as e:
-        logging.error("browser-cookie3 yok veya import edilemedi. 'pip install browser-cookie3' kurun.")
-        return None
-
-    try:
-        if source == "edge":
-            cj = bc3.edge()
-        elif source == "chrome":
-            cj = bc3.chrome()
-        elif source == "firefox":
-            cj = bc3.firefox()
-        elif source == "brave":
-            cj = bc3.brave()
-        elif source == "opera":
-            cj = bc3.opera()
-        else:
-            logging.error(f"Geçersiz --auto-cookie kaynağı: {source}")
-            return None
-    except Exception as e:
-        logging.error(f"Tarayıcı cookie okunamadı ({source}): {e}")
-        return None
-
-    # Hedef domain’i filtrele
-    pairs: List[Tuple[str, str]] = []
-    for c in cj:
-        dom = (c.domain or "").lstrip(".")
-        if domain_filter in dom:
-            pairs.append((c.name, c.value))
-
-    if not pairs:
-        logging.warning(f"Tarayıcıdan {domain_filter} için cookie bulunamadı.")
-        return None
-
-    # Header string üret
-    return _compose_cookie_header_from_items(pairs)
-
-def write_cookies_txt_if_changed(cookie_path: str, new_cookie_header: str) -> bool:
-    """
-    cookies.txt içeriği değiştiyse yazar ve True döner; değilse False.
-    (TEK SATIR yazım garanti)
-    """
-    old = ""
-    if os.path.exists(cookie_path):
-        try:
-            with open(cookie_path, "r", encoding="utf-8") as f:
-                old = f.read().strip()
-            if old.lower().startswith("cookie:"):
-                old = old[len("cookie:"):].strip()
-            old = old.replace("; ", ";").strip().strip(";")
-        except Exception:
-            old = ""
-    # normalize new
-    new_norm = new_cookie_header.replace("; ", ";").strip().strip(";")
-    if old == new_norm:
-        return False
-    # yaz
-    with open(cookie_path, "w", encoding="utf-8") as f:
-        f.write(new_norm)
-    return True
-
-def reload_cookies_and_session(cookie_path: str) -> requests.Session:
-    """
-    cookies.txt → cookie_dict + raw header → session + header’lar
-    """
-    global cookie_file_mtime, raw_cookie_header
-    cookie_dict, raw = load_cookies_from_file(cookie_path)
-    raw_cookie_header = raw
-    cookie_file_mtime = os.path.getmtime(cookie_path)
-    sess = build_session(cookie_dict)
-    logging.info("Cookie yeniden yüklendi ve session tazelendi.")
-    return sess
-
-def maybe_refresh_cookie_from_browser(cookie_path: str, bot_token: str, chat_id: str, thread_id: Optional[int]) -> Optional[requests.Session]:
-    """
-    --auto-cookie açık ise tarayıcıdan oku; değiştiyse txt’yi yaz, session’ı yenile,
-    Telegram’a “Cookie otomatik güncellendi (tarayıcı)” bildirimi yolla. Yeni session döndürür.
-    """
-    global auto_cookie_source
-    if not auto_cookie_source:
-        return None
-    new_header = _read_cookies_from_browser(TARGET_COOKIE_DOMAIN, auto_cookie_source)
-    if not new_header:
-        return None
-    changed = write_cookies_txt_if_changed(cookie_path, new_header)
-    if not changed:
-        return None
-    # Güncellendi — session’ı tazele, Telegram’a haber ver (OTOMATIK)
-    sess = reload_cookies_and_session(cookie_path)
-    send_telegram_message(bot_token, chat_id, "🔑 Cookie otomatik güncellendi (tarayıcı).", thread_id)
-    logging.info("Cookie tarayıcıdan çekildi ve cookies.txt güncellendi (OTOMATIK).")
-    return sess
-
-def main():
-    setup_logging()
-    parser = argparse.ArgumentParser(description="ChainUp Deposit Watcher (auto-cookie destekli)")
-    parser.add_argument("--cookie-file", default="cookies.txt", help="Cookie dosyası (tek satır, Request Headers → Cookie)")
-    parser.add_argument("--token", default=DEFAULT_TELEGRAM_BOT_TOKEN, help="Telegram bot token")
-    parser.add_argument("--chat-id", default=DEFAULT_TELEGRAM_CHAT_ID, help="Telegram chat id")
-    parser.add_argument("--thread-id", default=DEFAULT_TELEGRAM_THREAD_ID, type=int, nargs="?", help="Opsiyonel Telegram topic/thread id")
-    parser.add_argument("--interval", default=POLL_INTERVAL_SECONDS, type=int, help="Sorgu aralığı saniye")
-    parser.add_argument("--auto-cookie", choices=["edge","chrome","firefox","brave","opera"], help="Tarayıcıdan cookie otomatik çek")
-    args = parser.parse_args()
-
-    bot_token = args.token
-    chat_id = args.chat_id
-    thread_id = args.thread_id
-    interval = max(10, int(args.interval))
-    global auto_cookie_source
-    auto_cookie_source = args.auto_cookie
-
-    # Eğer --auto-cookie verildiyse önce tarayıcıdan okumayı dene ve dosyaya yaz
-    if auto_cookie_source:
-        logging.info(f"--auto-cookie aktif ({auto_cookie_source}). Tarayıcıdan cookie çekilecek.")
-        try:
-            header_from_browser = _read_cookies_from_browser(TARGET_COOKIE_DOMAIN, auto_cookie_source)
-            if header_from_browser:
-                if write_cookies_txt_if_changed(args.cookie_file, header_from_browser):
-                    logging.info("İlk başlatmada cookie tarayıcıdan yazıldı (cookies.txt).")
-                    # İlk başlatmada yapılan bu yazım OTOMATIK olduğundan mesaj gönderelim:
-                    # Not: reload birazdan zaten yapılacak, ama mesajı burada da atıyoruz.
-                    send_telegram_message(bot_token, chat_id, "🔑 Cookie otomatik güncellendi (tarayıcı).", thread_id)
-        except Exception as e:
-            logging.warning(f"İlk tarayıcı cookie yazımı başarısız: {e}")
-
-    # İlk cookie yükle
-    try:
-        sess = reload_cookies_and_session(args.cookie_file)
-    except Exception as e:
-        logging.error(f"Cookie yüklenemedi: {e}")
-        sys.exit(1)
-
-    handle_signals()
-
-    def on_exit():
-        try:
-            logging.info("Bot durduruluyor (exit).")
-            send_telegram_message(bot_token, chat_id, "⛔ Bot durduruldu", thread_id)
-        except Exception:
-            pass
-    atexit.register(on_exit)
-
-    logging.info("Bot başlatıldı. Depositleri izlemeye başladı.")
-    send_telegram_message(bot_token, chat_id, "✅ Bot başlatıldı", thread_id)
-
-    state = load_state(STATE_FILE)
-
-    # İlk bootstrap ve keepalive
-    try:
-        try_keepalive(sess)
-        # Oturumun doğru olduğundan emin olmak için (auto-cookie varsa) bir kez daha tarayıcıdan güncelleme dene
-        refreshed = maybe_refresh_cookie_from_browser(args.cookie_file, bot_token, chat_id, thread_id)
-        if refreshed is not None:
-            sess = refreshed
-        initial_list = fetch_deposits(sess)
-        logging.info(f"İlk listede {len(initial_list)} kayıt bulundu.")
-        if not state.get("bootstrap_done", False):
-            state = bootstrap_state_with_current_list(state, initial_list)
-            logging.info("Bootstrap tamamlandı; yeni kayıtlar bildirilecek.")
-    except PermissionError as e:
-        logging.error(f"401 (oturum) - cookie güncel değil: {e}")
-        sys.exit(2)
-    except ValueError as e:
-        logging.error(f"İlk fetch hata: {e} (muhtemelen code=10004 / oturum reddi)")
-    except Exception as e:
-        logging.error(f"İlk fetch sırasında beklenmeyen hata: {e}")
-
-    while not stop_event.is_set():
-        loop_start = time.time()
-
-        # --auto-cookie: tarayıcıdan cookie tazele (her turda dener, değişmişse uygular)
-        try:
-            refreshed = maybe_refresh_cookie_from_browser(args.cookie_file, bot_token, chat_id, thread_id)
-            if refreshed is not None:
-                sess = refreshed
-        except Exception as e:
-            logging.debug(f"Tarayıcıdan cookie tazeleme hatası: {e}")
-
-        # cookies.txt manuel değiştiyse yeniden yükle (ör. sen elle değiştirdin)
-        try:
-            current_mtime = os.path.getmtime(args.cookie_file)
-            if cookie_file_mtime is None or current_mtime != cookie_file_mtime:
-                # Buraya gelmişsek dosya M-TIME değişti (MANUEL güncelleme varsayımı).
-                logging.info("Cookie dosyasında değişiklik algılandı (MANUEL).")
-                sess = reload_cookies_and_session(args.cookie_file)
-                # MANUEL uyarı mesajı:
-                send_telegram_message(bot_token, chat_id, "📝 Cookie manuel güncellendi (dosya).", thread_id)
-        except Exception as e:
-            logging.debug(f"Cookie mtime kontrol hatası: {e}")
-
-        try_keepalive(sess)
-
-        new_items_sent: List[Dict] = []
-        try:
-            deposit_list = fetch_deposits(sess)
-            candidates = detect_new_deposits(state, deposit_list)
-            if candidates:
-                for item in candidates:
-                    text = build_telegram_message(item)
-                    ok = send_telegram_message(bot_token, chat_id, text, thread_id)
-                    if ok:
-                        logging.info(f"Telegram'a gönderildi | id={item.get('id')} createdAt={item.get('createdAt')}")
-                        new_items_sent.append(item)
-                    else:
-                        logging.error(f"Telegram gönderimi başarısız | id={item.get('id')}")
-                if new_items_sent:
-                    state = update_state_after_send(state, new_items_sent)
-            else:
-                logging.info("Yeni deposit yok.")
-        except PermissionError as e:
-            logging.warning(f"401 alındı, cookie yeniden okunacak: {e}")
-            try:
-                # Önce tarayıcıdan çekmeye çalış, olmazsa dosyadan yükle
-                refreshed = maybe_refresh_cookie_from_browser(args.cookie_file, bot_token, chat_id, thread_id)
-                if refreshed is not None:
-                    sess = refreshed
+                req = {
+                    "action":       mt5.TRADE_ACTION_DEAL,
+                    "symbol":       sym,
+                    "volume":       lots,
+                    "type":         close_type,
+                    "position":     ticket,
+                    "price":        price,
+                    "deviation":    10,
+                    "magic":        123456,
+                    "comment":      "Darkex close",
+                    "type_time":    mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+                res = mt5.order_send(req)
+                if res.retcode == mt5.TRADE_RETCODE_DONE:
+                    logger.info("MT5 closed ticket=%s lots=%.4f", ticket, lots)
+                    rem_contracts -= to_close
+                    if available_contracts > to_close:
+                        new_list.append(ticket)
                 else:
-                    sess = reload_cookies_and_session(args.cookie_file)
-            except Exception as e2:
-                logging.error(f"Cookie yeniden yüklenemedi: {e2}")
-        except ValueError as e:
-            # Örn. code=10004 user not logged in
-            msg = str(e)
-            if "10004" in msg or "not logged in" in msg.lower():
-                logging.warning("API '10004 / not logged in' tespit edildi. Cookie tazeleniyor...")
-                try:
-                    refreshed = maybe_refresh_cookie_from_browser(args.cookie_file, bot_token, chat_id, thread_id)
-                    if refreshed is not None:
-                        sess = refreshed
-                    else:
-                        sess = reload_cookies_and_session(args.cookie_file)
-                except Exception as e2:
-                    logging.error(f"Cookie yeniden yüklenemedi: {e2}")
+                    logger.error("MT5 close failed: %s", res)
+                    new_list.append(ticket)
+
+            if new_list:
+                mt5_tickets[key] = new_list
             else:
-                logging.error(f"Deposit sorgusunda hata: {e}")
+                mt5_tickets.pop(key, None)
+
+
+def _pos_key(pos):
+    return f"{pos['contractName']}|{pos['side']}"
+
+
+def monitor_positions(poll_interval=10):
+    prev = {}
+    while True:
+        try:
+            df = get_open_positions_df()
+            curr = { _pos_key(r): r for _, r in df.iterrows() }
+
+            for k, pos in curr.items():
+                cnt = pos['volume']  # Darkex kontrat sayısı
+                if k not in prev:
+                    send_text_to_telegram(
+                        TELEGRAM_BOT_TOKEN, CHAT_ID,
+                        f"New pos: {pos['contractName']} {pos['side']} cnt:{cnt}"
+                    )
+                    mt5_queue.put({
+                        'symbol':    pos['contractName'],
+                        'side':      pos['side'],
+                        'contracts': cnt,
+                        'action':    'open'
+                    })
+                else:
+                    prev_cnt = prev[k]['volume']
+                    if cnt > prev_cnt:
+                        diff = cnt - prev_cnt
+                        send_text_to_telegram(
+                            TELEGRAM_BOT_TOKEN, CHAT_ID,
+                            f"Added to pos: {pos['contractName']} {pos['side']} +{diff:.3f}"
+                        )
+                        mt5_queue.put({
+                            'symbol':    pos['contractName'],
+                            'side':      pos['side'],
+                            'contracts': diff,
+                            'action':    'open'
+                        })
+                    elif cnt < prev_cnt:
+                        diff = prev_cnt - cnt
+                        send_text_to_telegram(
+                            TELEGRAM_BOT_TOKEN, CHAT_ID,
+                            f"Partially closed pos: {pos['contractName']} {pos['side']} -{diff:.3f}"
+                        )
+                        mt5_queue.put({
+                            'symbol':    pos['contractName'],
+                            'side':      pos['side'],
+                            'contracts': diff,
+                            'action':    'close'
+                        })
+
+            for k, pos in prev.items():
+                if k not in curr:
+                    cnt = pos['volume']
+                    send_text_to_telegram(
+                        TELEGRAM_BOT_TOKEN, CHAT_ID,
+                        f"Closed pos: {pos['contractName']} {pos['side']} cnt:{cnt}"
+                    )
+                    mt5_queue.put({
+                        'symbol':    pos['contractName'],
+                        'side':      pos['side'],
+                        'contracts': cnt,
+                        'action':    'close'
+                    })
+
+            prev = {
+                k: {'contractName': p['contractName'],
+                    'side':         p['side'],
+                    'volume':       p['volume']}
+                for k, p in curr.items()
+            }
         except Exception as e:
-            logging.error(f"Deposit sorgusunda beklenmeyen hata: {e}")
+            logger.error("monitor_positions error: %s", e)
+        time.sleep(poll_interval)
 
-        # Bekleme (dilimli; stop_event erken çıkabilir)
-        elapsed = time.time() - loop_start
-        sleep_s = max(1.0, interval - elapsed)
-        slept = 0.0
-        while slept < sleep_s and not stop_event.is_set():
-            chunk = min(1.0, sleep_s - slept)
-            time.sleep(chunk)
-            slept += chunk
 
-    logging.info("Bot durduruldu.")
+def get_updates(offset=None):
+    url    = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    params = {'offset': offset} if offset else {}
+    try:
+        r = requests.get(url, params=params, timeout=5)
+        r.raise_for_status()
+        return r.json().get('result', [])
+    except Exception as e:
+        logger.error("get_updates error: %s", e)
+        return []
+
+
+def handle_commands(update):
+    msg     = update.get('message', {})
+    text    = msg.get('text', '').strip()
+    chat_id = msg.get('chat', {}).get('id')
+    if chat_id is None:
+        return
+
+    if text == '/balance':
+        try:
+            df       = get_futures_account_balance_df()
+            dark_bal = df['totalEquity'].iloc[0] if not df.empty else None
+        except:
+            dark_bal = None
+        try:
+            acc      = mt5.account_info()
+            mt5_bal  = acc.balance if acc else None
+        except:
+            mt5_bal  = None
+
+        parts = []
+        parts.append(f"Darkex Balance: {dark_bal:.2f} USDT" if dark_bal is not None else "Darkex Balance: ❌")
+        parts.append(f"MT5 Balance:    {mt5_bal:.2f} USDT"   if mt5_bal   is not None else "MT5 Balance:    ❌")
+        send_text_to_telegram(TELEGRAM_BOT_TOKEN, chat_id, "\n".join(parts))
+        return
+
+    elif text == '/positions':
+        try:
+            # Fetch Darkex positions
+            darkex_msg = []
+            df = get_open_positions_df()
+            if df.empty:
+                darkex_msg.append("📭 Darkex açık pozisyon yok.")
+            else:
+                darkex_msg.append("📈 Darkex Açık Pozisyonlar:")
+                for _, r in df.iterrows():
+                    darkex_msg.append(
+                        f"{r['contractName']} | {r['side']} | Vol: {r['volume']} | Entry: {r['openPrice']} | uPnL: {r['uPnL']:.2f}"
+                    )
+        except Exception as e:
+            logger.error("Darkex position fetch error: %s", e)
+            darkex_msg = ["❌ Darkex pozisyonları alınırken hata oluştu."]
+
+        try:
+            # Fetch MT5 positions
+            mt5_msg = []
+            positions = mt5.positions_get()
+            if not positions:
+                mt5_msg.append("📭 MT5 açık pozisyon yok.")
+            else:
+                mt5_msg.append("📉 MT5 Açık Pozisyonlar:")
+                for p in positions:
+                    mt5_msg.append(
+                        f"{p.symbol} | {'BUY' if p.type==0 else 'SELL'} | Vol: {p.volume} | Entry: {p.price_open:.2f} | uPnL: {p.profit:.2f}"
+                    )
+        except Exception as e:
+            logger.error("MT5 position fetch error: %s", e)
+            mt5_msg = ["❌ MT5 pozisyonları alınırken hata oluştu."]
+
+        # Combine and send
+        full_reply = "\n".join(darkex_msg + [""] + mt5_msg)
+        send_text_to_telegram(TELEGRAM_BOT_TOKEN, chat_id, full_reply)
+
+    elif text == '/orders':
+        try:
+            df = get_open_orders_df()
+            if df.empty:
+                reply = "📭 Açık emir yok."
+            else:
+                lines = ["📝 Açık Emirler:"]
+                for _, r in df.iterrows():
+                    price = float(r.get("price", 0))
+                    qty   = float(r.get("origQty", r.get("quantity", 0)))
+                    lines.append(
+                        f"{r.get('contractName', r.get('symbol', ''))} | {r.get('side')} | Price:{price} | Qty:{qty}"
+                    )
+                reply = "\n".join(lines)
+        except:
+            reply = "❌ Emirler alınırken hata oluştu."
+        send_text_to_telegram(TELEGRAM_BOT_TOKEN, chat_id, reply)
+
+
+def poll_updates():
+    offset = None
+    while True:
+        for upd in get_updates(offset):
+            offset = upd['update_id'] + 1
+            handle_commands(upd)
+        time.sleep(1)
+
 
 if __name__ == "__main__":
-    main()
+    init_mt5(MT5_LOGIN, MT5_PASSWORD, MT5_SERVER)
+    threading.Thread(target=poll_updates,      daemon=True).start()
+    threading.Thread(target=monitor_positions, daemon=True).start()
+    threading.Thread(target=mt5_executor,      daemon=True).start()
+
+    logger.info("Bot running…")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutting down…")
