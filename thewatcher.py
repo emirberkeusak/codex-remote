@@ -369,11 +369,16 @@ def mt5_executor():
         if now >= next_snapshot:
             next_snapshot = now + _SNAPSHOT_INTERVAL_SEC
 
+            snapshot_ok = False
             try:
                 df = get_open_positions_df()
+                snapshot_ok = True
             except Exception as e:
                 logger.error("Darkex snapshot error: %s", e)
-                df = pd.DataFrame()
+                snapshot_ok = False
+
+            if not snapshot_ok:
+                continue
 
             seen = set()
             if not df.empty:
