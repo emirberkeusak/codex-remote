@@ -130,12 +130,28 @@ def get_open_positions_df():
     }
     r = requests.get(DARKEX_BASE_URL + path, headers=headers, timeout=10)
     r.raise_for_status()
-    acct_list = r.json().get("account", [])
+    
+    data = r.json()
+    acct_list = data.get("account")
+    if not isinstance(acct_list, list):
+        logger.error("get_open_positions_df: unexpected response %s", data)
+        raise ValueError("account list missing")
+    
     rows = []
+    any_positions = False
     for acct in acct_list:
         for vo in acct.get("positionVos", []):
             cname = vo.get("contractName")
-            for pos in vo.get("positions", []):
+            positions = vo.get("positions")
+            if positions is None:
+                logger.error("get_open_positions_df: positions missing for %s", vo)
+                continue
+            if not isinstance(positions, list):
+                logger.error("get_open_positions_df: positions not list for %s", vo)
+                continue
+            if positions:
+                any_positions = True
+            for pos in positions:
                 print(pos)  # mevcut davranışı koruyoruz
                 vol = float(pos.get("volume", 0))
                 if vol <= 0:
@@ -147,6 +163,10 @@ def get_open_positions_df():
                     "openPrice":    float(pos.get("openPrice", 0)),
                     "uPnL":         float(pos.get("unRealizedAmount", 0)),
                 })
+
+    if not any_positions:
+        logger.debug("get_open_positions_df: snapshot contained no open positions")
+
     return pd.DataFrame(rows)
 
 def send_text_to_telegram(token, chat_id, text):
@@ -352,6 +372,7 @@ def mt5_executor():
     miss_counts = defaultdict(int)
 
     next_snapshot = 0.0
+    empty_snapshot_run = 0
 
     # Thread-safety için sembol-yanı kilitleri (eşzamanlı emir çakışmasını önler)
     inflight = defaultdict(lambda: threading.Lock())
@@ -381,7 +402,14 @@ def mt5_executor():
                 continue
 
             seen = set()
-            if not df.empty:
+            if df.empty:
+                empty_snapshot_run += 1
+                if empty_snapshot_run >= _MISS_CONFIRM_CYCLES:
+                    for key in list(desired_contracts_auth.keys()):
+                        miss_counts[key] = _MISS_CONFIRM_CYCLES
+                        desired_contracts_auth[key] = 0.0
+            else:
+                empty_snapshot_run = 0
                 for _, r in df.iterrows():
                     darkex_symbol = r["contractName"]
                     side          = r["side"]
@@ -391,13 +419,13 @@ def mt5_executor():
                     miss_counts[key] = 0  # görüldü
                     seen.add(key)
 
-            # Snapshot’ta görülmeyen anahtarlar için miss say
-            for key in list(desired_contracts_auth.keys()):
-                if key not in seen:
-                    miss_counts[key] += 1
-                    # ancak yeterince yoksa eski hedefi koru (kapanmış sayma)
-                    if miss_counts[key] >= _MISS_CONFIRM_CYCLES:
-                        desired_contracts_auth[key] = 0.0
+                # Snapshot’ta görülmeyen anahtarlar için miss say
+                    for key in list(desired_contracts_auth.keys()):
+                        if key not in seen:
+                            miss_counts[key] += 1
+                            # ancak yeterince yoksa eski hedefi koru (kapanmış sayma)
+                            if miss_counts[key] >= _MISS_CONFIRM_CYCLES:
+                                desired_contracts_auth[key] = 0.0
 
         # 3) Reconcile: her anahtar için MT5 lotunu target’a yaklaştır
         #    Ayrıca MT5’te kalmış "yetim" pozisyonlar için de 0 hedef uygulanır
