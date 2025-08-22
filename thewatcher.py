@@ -128,9 +128,18 @@ def get_open_positions_df():
         "Content-Type":"application/json",
         "X-CH-SIGN":   sig
     }
-    r = requests.get(DARKEX_BASE_URL + path, headers=headers, timeout=10)
-    r.raise_for_status()
     
+    start = time.perf_counter()
+    try:
+        r = requests.get(DARKEX_BASE_URL + path, headers=headers, timeout=10)
+        r.raise_for_status()
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.debug("snapshot HTTP %s in %.0fms", r.status_code, elapsed_ms)
+    except requests.RequestException as e:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.error("snapshot failed after %.0fms: %s", elapsed_ms, e)
+        raise
+
     data = r.json()
     acct_list = data.get("account")
     if not isinstance(acct_list, list):
@@ -404,10 +413,14 @@ def mt5_executor():
             seen = set()
             if df.empty:
                 empty_snapshot_run += 1
+                logger.debug("empty_snapshot_run=%d", empty_snapshot_run)
                 if empty_snapshot_run >= _MISS_CONFIRM_CYCLES:
                     for key in list(desired_contracts_auth.keys()):
                         miss_counts[key] = _MISS_CONFIRM_CYCLES
+                        darkex_symbol, side = key
+                        logger.debug("miss_counts[%s,%s]=%d", darkex_symbol, side, miss_counts[key])
                         desired_contracts_auth[key] = 0.0
+                        logger.info("Zeroing %s,%s after %d misses", darkex_symbol, side, miss_counts[key])
             else:
                 empty_snapshot_run = 0
                 for _, r in df.iterrows():
@@ -417,15 +430,19 @@ def mt5_executor():
                     key = (darkex_symbol, side)
                     desired_contracts_auth[key] = max(0.0, vol_ct)
                     miss_counts[key] = 0  # görüldü
+                    logger.debug("miss_counts[%s,%s]=%d", darkex_symbol, side, miss_counts[key])
                     seen.add(key)
 
                 # Snapshot’ta görülmeyen anahtarlar için miss say
                     for key in list(desired_contracts_auth.keys()):
                         if key not in seen:
                             miss_counts[key] += 1
+                            darkex_symbol, side = key
+                            logger.debug("miss_counts[%s,%s]=%d", darkex_symbol, side, miss_counts[key])
                             # ancak yeterince yoksa eski hedefi koru (kapanmış sayma)
                             if miss_counts[key] >= _MISS_CONFIRM_CYCLES:
                                 desired_contracts_auth[key] = 0.0
+                                logger.info("Zeroing %s,%s after %d misses", darkex_symbol, side, miss_counts[key])
 
         # 3) Reconcile: her anahtar için MT5 lotunu target’a yaklaştır
         #    Ayrıca MT5’te kalmış "yetim" pozisyonlar için de 0 hedef uygulanır
@@ -443,11 +460,14 @@ def mt5_executor():
                         # miss confirm koşulunu uygularız:
                         if k not in miss_counts:
                             miss_counts[k] = 1
+                            logger.debug("miss_counts[%s,%s]=%d", d_sym, side, miss_counts[k])
                             desired_contracts_auth[k] = 0.0
                         else:
                             miss_counts[k] += 1
+                            logger.debug("miss_counts[%s,%s]=%d", d_sym, side, miss_counts[k])
                             if miss_counts[k] >= _MISS_CONFIRM_CYCLES:
                                 desired_contracts_auth[k] = 0.0
+                                logger.info("Zeroing %s,%s after %d misses", d_sym, side, miss_counts[k])
                         keys_to_handle.add(k)
 
         for (darkex_symbol, side) in list(keys_to_handle):
