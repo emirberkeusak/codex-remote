@@ -1,934 +1,623 @@
-import asyncio, aiohttp, json, re, csv, os
-from datetime import datetime
-from typing import Any, Dict, Tuple, Optional, List, Set
-from urllib.parse import urlparse
-from pathlib import Path
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-# === FIX: durum metnini normalize et ve eşanlamlıları birleştir
-def _normalize_status(value):
-    if value is None:
-        return ""
-    s = str(value)
-    # fazla boşlukları tek boşluğa indir, kırp, küçük harfe çevir
-    s = re.sub(r"\s+", " ", s).strip().lower()
-    # yaygın eşanlamlıları "completed" altında topla
-    aliases = {
-        "complete": "completed",
-        "completed": "completed",
-        "success": "completed",
-        "successful": "completed",
-        "succeeded": "completed",
-        "done": "completed",
-        "finished": "completed",
-        "ok": "completed",
-        "confirmed": "completed",
-        "confirm": "completed",
-        # olası yerelleştirmeler
-        "已完成": "completed", "完成": "completed", "成功": "completed",
+import argparse
+import atexit
+import json
+import logging
+import os
+import signal
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
+
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
+# =========================
+# Varsayılan Ayarlar
+# =========================
+DEFAULT_BASE_URL = "https://e38ce8fd14d3d5a75199844a241806d4.chainupcloud.info"
+DEPOSIT_API_ENDPOINT = f"{DEFAULT_BASE_URL}/admin-api/depositCrypto"
+KEEPALIVE_PAGE_URL = f"{DEFAULT_BASE_URL}/depositCrypto"
+TARGET_COOKIE_DOMAIN = "chainupcloud.info"  # tarayıcıdan çekerken filtre
+
+# Telegram — CLI ile de geçebilirsiniz
+DEFAULT_TELEGRAM_BOT_TOKEN = "7895901821:AAEJs3mmWxiWrRyVKcRiAxMN2Rn4IpiyV0o"  # CLI --token ile verin
+DEFAULT_TELEGRAM_CHAT_ID = "-4678220102"    # CLI --chat-id ile verin
+DEFAULT_TELEGRAM_THREAD_ID: Optional[int] = None  # opsiyonel
+
+# Poll aralığı
+POLL_INTERVAL_SECONDS = 60
+REQUEST_TIMEOUT = 15
+
+# Retry
+RETRY_TOTAL = 5
+RETRY_BACKOFF_FACTOR = 0.6
+RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
+RETRY_ALLOWED_METHODS = frozenset(["GET", "POST"])
+
+# State & Log
+STATE_FILE = "state.json"
+LOG_FILE = "deposit_watcher.log"
+LOG_LEVEL = logging.INFO
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+
+stop_event = threading.Event()
+cookie_file_mtime: Optional[float] = None
+raw_cookie_header: str = ""  # "name=value; ..." biçiminde
+auto_cookie_source: Optional[str] = None  # edge|chrome|firefox|brave|opera
+
+def setup_logging() -> None:
+    from logging.handlers import RotatingFileHandler
+    logger = logging.getLogger()
+    logger.setLevel(LOG_LEVEL)
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", "%Y-%m-%d %H:%M:%S")
+    ch = logging.StreamHandler(sys.stdout); ch.setLevel(LOG_LEVEL); ch.setFormatter(fmt); logger.addHandler(ch)
+    fh = RotatingFileHandler(LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8")
+    fh.setLevel(LOG_LEVEL); fh.setFormatter(fmt); logger.addHandler(fh)
+
+def load_cookies_from_file(cookie_file: str) -> Tuple[Dict[str, str], str]:
+    if not os.path.exists(cookie_file):
+        raise FileNotFoundError(f"Cookie dosyası yok: {cookie_file}")
+    with open(cookie_file, "r", encoding="utf-8") as f:
+        data = f.read().strip()
+    if data.lower().startswith("cookie:"):
+        data = data[len("cookie:"):].strip()
+    # normalize
+    data = " ".join(line.strip() for line in data.splitlines())
+    data = data.replace("; ", ";").strip().strip(";")
+    cookie_dict: Dict[str, str] = {}
+    if data:
+        for part in data.split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            cookie_dict[k.strip()] = v.strip()
+    return cookie_dict, data
+
+def _get_cookie_val(cd: Dict[str, str], *keys: str, default: str = "") -> str:
+    for k in keys:
+        if k in cd and cd[k]:
+            return cd[k]
+    return default
+
+def build_session(cookie_dict: Dict[str, str]) -> requests.Session:
+    """
+    Session + retry kur; hem cookie jar’a yükle hem de kritik admin header’ları set et.
+    """
+    sess = requests.Session()
+    retry = Retry(total=RETRY_TOTAL, backoff_factor=RETRY_BACKOFF_FACTOR,
+                  status_forcelist=RETRY_STATUS_FORCELIST, allowed_methods=RETRY_ALLOWED_METHODS,
+                  raise_on_status=False)
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    sess.mount("http://", adapter); sess.mount("https://", adapter)
+
+    # Cookie jar
+    sess.cookies.clear()
+    for k, v in cookie_dict.items():
+        sess.cookies.set(k, v, domain="e38ce8fd14d3d5a75199844a241806d4.chainupcloud.info")
+
+    # Header bileşenleri
+    csrf_token = _get_cookie_val(cookie_dict, "csrfToken", "csrftoken", default="")
+    admin_token = _get_cookie_val(cookie_dict, "admin-token", default="")
+    admin_broker = _get_cookie_val(cookie_dict, "admin-broker-id-co", default="")
+    admin_source = _get_cookie_val(cookie_dict, "admin-source", default="admin")
+    lan = _get_cookie_val(cookie_dict, "lan", default="en_US")
+    servicelang = _get_cookie_val(cookie_dict, "servicelanguage", default="en-US")
+    admin_language = _get_cookie_val(cookie_dict, "admin-language", default=lan)
+    swap_broker_id = _get_cookie_val(cookie_dict, "swap-broker-Id", default="")
+
+    common_headers = {
+        # Tarayıcıya benzer başlıklar
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"),
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json;charset=UTF-8",
+        "Origin": DEFAULT_BASE_URL,
+        "Referer": KEEPALIVE_PAGE_URL,
+        "Accept-Language": f"{servicelang},en;q=0.9",
+        "X-Requested-With": "XMLHttpRequest",
+
+        # Admin uçlarının beklediği spesifik başlıklar
+        "admin-token": admin_token,
+        "admin-broker-id-co": admin_broker,
+        "admin-source": admin_source,
+        "lan": lan,
+        "servicelanguage": servicelang,
+        "admin-language": admin_language,
+        "swap-broker-Id": swap_broker_id,
+
+        # Bazı sistemlerde isim duyarlı olabilir
+        "csrfToken": csrf_token,
+        "X-CSRF-Token": csrf_token,
     }
-    return aliases.get(s, s)
+    # Boşları ayıkla
+    for k in list(common_headers.keys()):
+        if common_headers[k] is None or common_headers[k] == "":
+            common_headers.pop(k, None)
 
+    sess.headers.update(common_headers)
+    return sess
 
-# ====== Telegram ayarları ======
-TELEGRAM_BOT_TOKEN = "7895901821:AAEJs3mmWxiWrRyVKcRiAxMN2Rn4IpiyV0o"
-TELEGRAM_CHAT_ID   = "-4678220102"
-
-# ====== Script klasörü ======
-BASE_DIR = Path(__file__).resolve().parent
-
-# ----- Deposit dosyaları -----
-DEPOSIT_API_URL_FILE   = BASE_DIR / "api_url.txt"              # https://.../admin-api/depositCrypto
-DEPOSIT_PAGE_URL_FILE  = BASE_DIR / "page_url.txt"             # https://.../depositCrypto
-DEPOSIT_COOKIE_FILE    = BASE_DIR / "cookie.txt"               # ortak
-DEPOSIT_PAYLOAD_FILE   = BASE_DIR / "payload.json"             # opsiyonel
-DEPOSIT_STATE_FILE     = BASE_DIR / "state.json"
-
-# ----- Withdraw dosyaları -----
-WITHDRAW_API_URL_FILE  = BASE_DIR / "api_url_withdraw.txt"     # https://.../admin-api/withdrawCrypto
-WITHDRAW_PAGE_URL_FILE = BASE_DIR / "page_url_withdraw.txt"    # https://.../withdrawCrypto
-WITHDRAW_PAYLOAD_FILE  = BASE_DIR / "payload_withdraw.json"    # opsiyonel
-WITHDRAW_STATE_FILE    = BASE_DIR / "state_withdraw.json"
-
-# ----- CountryCode için ORTAK -----
-CC_PAGE_URL_FILE      = BASE_DIR / "cc_page_url.txt"           # baz: https://.../userDetail?id=
-CC_API_URL_FILE       = BASE_DIR / "cc_api_url.txt"            # https://.../admin-api/get_user_info
-
-# ----- Login config -----
-LOGIN_CONFIG_FILE     = BASE_DIR / "login.json"
-
-
-# ----- Ülke isim eşleme dosyaları (CSV / XLSX) -----
-COUNTRY_MAP_CSV       = BASE_DIR / "country_map.csv"           # Code,Country (opsiyonel)
-COUNTRY_MAP_XLSX      = BASE_DIR / "country_map.xlsx"          # COUNTRY, COUNTRY CODE (tercih edilen)
-
-# ====== Ayarlar ======
-POLL_SECONDS   = 5
-SEED_ON_START  = True
-CC_TIMEOUT_SEC = 1.5     # countryCode getirirken max bekleme sn
-
-# ----------------------------------------------------------
-def read_text_or_empty(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8-sig").strip()
-    except FileNotFoundError:
-        return ""
-
-def normalize_cookie_value(text: str) -> str:
-    if not text:
-        return ""
-    t = text.strip()
-    if t.lower().startswith("cookie:"):
-        t = t.split(":", 1)[1].strip()
-    return " ".join(s.strip() for s in t.splitlines() if s.strip())
-
-def cookie_get(cookie_value: str, name: str) -> Optional[str]:
-    if not cookie_value:
-        return None
-    for part in cookie_value.split(";"):
-        if "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        if k.strip().lower() == name.lower():
-            return v.strip()
-    return None
-
-def parse_origin(url: str) -> str:
-    try:
-        u = urlparse(url)
-        if not u.scheme or not u.netloc:
-            return ""
-        host = u.hostname or ""
-        port = ""
-        if u.port and not ((u.scheme == "https" and u.port == 443) or (u.scheme == "http" and u.port == 80)):
-            port = f":{u.port}"
-        return f"{u.scheme}://{host}{port}"
-    except Exception:
-        return ""
-    
-def load_login_credentials() -> Tuple[str, str, str]:
-    """Load login URL, username and password from environment or JSON config."""
-    url = os.environ.get("WATCHER_LOGIN_URL") or ""
-    user = os.environ.get("WATCHER_USERNAME") or ""
-    pwd = os.environ.get("WATCHER_PASSWORD") or ""
-    if url and user and pwd:
-        return url, user, pwd
-    try:
-        obj = json.loads(read_text_or_empty(LOGIN_CONFIG_FILE))
-        return obj.get("url", ""), obj.get("username", ""), obj.get("password", "")
-    except Exception:
-        return "", "", ""
-
-def load_json_or(path: Path, default: Any) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception:
-        return default
-
-def save_json(path: Path, obj: Any) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
-
-def fmt_tr(dt: datetime) -> str:
-    return dt.strftime("%d/%m/%Y %H.%M.%S")
-
-class FileWatcher:
-    def __init__(self, path: Path, normalize_fn=None):
-        self.path = Path(path)
-        self.norm = normalize_fn
-        self.mtime = 0.0
-        self.value: Optional[str] = None
-
-    def load_if_changed(self) -> Tuple[bool, Optional[str]]:
-        try:
-            st = self.path.stat()
-            if self.mtime != st.st_mtime:
-                raw = read_text_or_empty(self.path)
-                self.value = self.norm(raw) if self.norm else raw
-                self.mtime = st.st_mtime
-                return True, self.value
-        except FileNotFoundError:
-            pass
-        return False, self.value
-
-# ---------- Country map (CSV veya XLSX) ----------
-class CountryMap:
+def _api_headers() -> Dict[str, str]:
     """
-    - XLSX varsa onu okur (COUNTRY, COUNTRY CODE sütunları).
-    - Yoksa CSV okur (Code,Country / Country Code,Country vs. esnek başlık).
-    - Kod hücresinde '1-809, 1-829, 1-849' gibi ifadeler varsa içindeki TÜM sayı parçalarını ayrı ayrı map'ler.
+    Her POST/GET çağrısında ham Cookie’yi ve XMLHttpRequest işaretini garantiye al.
+    Session.headers zaten diğer admin başlıklarını içeriyor.
     """
-    def __init__(self, csv_path: Path, xlsx_path: Path):
-        self.csv_path  = Path(csv_path)
-        self.xlsx_path = Path(xlsx_path)
-        self.use_xlsx  = self.xlsx_path.exists()
-        self.mtime = 0.0
-        self.map: Dict[str, List[str]] = {}
+    return {
+        "Cookie": raw_cookie_header,
+        "X-Requested-With": "XMLHttpRequest",
+    }
 
-    # --- yardımcılar ---
-    @staticmethod
-    def _numeric_pieces(cell: str) -> List[str]:
-        """Hücre içindeki TÜM sayı parçalarını çıkar (örn '1-829, 1-849' -> ['1','829','1','849'])."""
-        if not cell:
-            return []
-        return re.findall(r"\d+", str(cell))
+def try_keepalive(sess: requests.Session) -> None:
+    """
+    Oturumu sıcak tutmak için UI sayfasına GET at.
+    """
+    try:
+        r = sess.get(KEEPALIVE_PAGE_URL, timeout=REQUEST_TIMEOUT, headers={"Cookie": raw_cookie_header})
+        if r.status_code == 401:
+            logging.warning("Keepalive 401: oturum düşmüş olabilir.")
+    except Exception as e:
+        logging.debug(f"Keepalive hata: {e}")
 
-    @staticmethod
-    def _append(mapobj: Dict[str, List[str]], code: str, country: str):
-        if not code or not country:
-            return
-        mapobj.setdefault(code, [])
-        if country not in mapobj[code]:
-            mapobj[code].append(country)
+def fetch_deposits(sess: requests.Session) -> List[Dict]:
+    """
+    Admin API’den en güncel deposit kayıtlarını çek.
+    """
+    payload = {"page": 1, "size": 200, "pageSize": 200, "limit": 200}
+    resp = sess.post(DEPOSIT_API_ENDPOINT, json=payload, timeout=REQUEST_TIMEOUT, headers=_api_headers())
+    if resp.status_code == 401:
+        raise PermissionError("401 Unauthorized (cookie/oturum).")
+    resp.raise_for_status()
+    data = resp.json()
+    code = data.get("code")
+    ok_code = (code == "0" or code == 0)
+    if not ok_code:
+        raise ValueError(f"API 'code' başarısız: {code}, msg={data.get('msg')}")
+    inner = data.get("data") or {}
+    lst = inner.get("depositCryptoMapList") or []
+    if not isinstance(lst, list):
+        raise ValueError("depositCryptoMapList beklenmedik tip")
+    return lst
 
-    # --- CSV ---
-    def _load_csv(self) -> Dict[str, List[str]]:
-        res: Dict[str, List[str]] = {}
-        with self.csv_path.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.reader(f)
-            rows = list(reader)
-        if not rows:
-            return res
-        headers = [h.strip().lower() for h in rows[0]]
-        # sütun indeksleri
+def load_state(state_file: str) -> Dict:
+    if not os.path.exists(state_file):
+        return {"processed_ids": [], "last_seen_created_at": 0, "bootstrap_done": False}
+    try:
+        with open(state_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"processed_ids": [], "last_seen_created_at": 0, "bootstrap_done": False}
+
+def save_state(state_file: str, state: Dict) -> None:
+    tmp = state_file + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, state_file)
+
+def epoch_ms_to_local_iso(ms: int) -> str:
+    try:
+        dt = datetime.fromtimestamp(ms / 1000, tz=None).astimezone()
+        return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+    except Exception:
         try:
-            code_idx = headers.index("country code")
-        except ValueError:
-            try:
-                code_idx = headers.index("code")
-            except ValueError:
-                code_idx = 0
-        try:
-            country_idx = headers.index("country")
-        except ValueError:
-            country_idx = 1 if len(headers) > 1 else 0
-
-        for row in rows[1:]:
-            if len(row) <= max(code_idx, country_idx):
-                continue
-            country = (row[country_idx] or "").strip()
-            for piece in self._numeric_pieces(row[code_idx]):
-                self._append(res, piece, country)
-        return res
-
-    # --- XLSX ---
-    def _load_xlsx(self) -> Dict[str, List[str]]:
-        res: Dict[str, List[str]] = {}
-        try:
-            import openpyxl  # pip install openpyxl
-        except Exception as e:
-            print(f"[CountryMap] openpyxl yok veya yüklenemedi: {e}")
-            return res
-
-        wb = openpyxl.load_workbook(self.xlsx_path, data_only=True, read_only=True)
-        ws = wb.active
-
-        # Başlık satırı
-        headers = []
-        for cell in ws[1]:
-            headers.append((cell.value or "").strip().lower())
-        # Sütun indeksleri
-        def idx_of(names: List[str], fallback: int) -> int:
-            for i, h in enumerate(headers):
-                if h in names:
-                    return i
-            return fallback
-
-        code_col = idx_of(["country code", "country_code", "code", "kod"], 1)
-        country_col = idx_of(["country", "ülke", "name"], 0)
-
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            vals = ["" if v is None else str(v) for v in row]
-            if len(vals) <= max(code_col, country_col):
-                continue
-            country = vals[country_col].strip()
-            code_cell = vals[code_col]
-            for piece in self._numeric_pieces(code_cell):
-                self._append(res, piece, country)
-        return res
-
-    def reload_if_changed(self) -> bool:
-        # hangi dosya?
-        self.use_xlsx = self.xlsx_path.exists()
-        target = self.xlsx_path if self.use_xlsx else self.csv_path
-        try:
-            st = target.stat()
-            if st.st_mtime == self.mtime:
-                return False
-            self.mtime = st.st_mtime
-        except FileNotFoundError:
-            if self.map:
-                self.map = {}
-            return False
-
-        try:
-            new_map = self._load_xlsx() if self.use_xlsx else self._load_csv()
-            self.map = new_map
-            kind = "XLSX" if self.use_xlsx else "CSV"
-            print(f"[CountryMap] {kind} yüklendi; toplam kod={len(self.map)}")
-            return True
-        except Exception as e:
-            print(f"[CountryMap] yükleme hatası: {e}")
-            self.map = {}
-            return True
-
-    def countries_for_cc(self, cc_str: Optional[str]) -> Optional[str]:
-        """cc_str: '+792+90' -> '90' al, map'te ara, listeyi ' / ' ile birleştir."""
-        if not cc_str:
-            return None
-        digits = re.findall(r"\d+", str(cc_str))
-        if not digits:
-            return None
-        code = digits[-1]
-        lst = self.map.get(code)
-        if not lst:
-            return None
-        return " / ".join(lst)
-
-# ---------- Telegram ----------
-class Telegram:
-    def __init__(self, session: aiohttp.ClientSession, token: str, chat_id: str):
-        self.session = session
-        self.token = token
-        self.chat_id = chat_id
-
-    async def send(self, text: str) -> None:
-        print(f"[TG] {text}")
-        if not self.token or not self.chat_id:
-            return
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        data = {"chat_id": self.chat_id, "text": text, "disable_web_page_preview": True}
-        try:
-            async with self.session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                await r.text()
-        except Exception as e:
-            print(f"[WARN] Telegram gönderilemedi: {e}")
-
-# ---------- Yardımcılar ----------
-def build_user_detail_url(base_or_full: str, uid: str) -> Optional[str]:
-    if not base_or_full or not uid:
-        return None
-    s = base_or_full.strip()
-    if re.search(r"id=$", s):
-        return s + uid
-    if re.search(r"id=\d+$", s):
-        return re.sub(r"id=\d+$", f"id={uid}", s)
-    if "?" in s:
-        joiner = "&" if not s.endswith("&") else ""
-        return f"{s}{joiner}id={uid}"
-    else:
-        joiner = "?" if not s.endswith("?") else ""
-        return f"{s}{joiner}id={uid}"
-
-class BaseWatcher:
-    def __init__(
-        self,
-        name: str,
-        api_url_file: Path,
-        page_url_file: Path,
-        cookie_file: Path,
-        payload_file: Path,
-        state_file: Path,
-        list_keys: List[str],
-        header_emoji: str,
-        header_title: str,
-        wanted_fields_fn,
-        cc_page_fw: FileWatcher,
-        cc_api_fw: FileWatcher,
-        country_map: CountryMap,
-        status_field: Optional[str] = None,
-        allowed_statuses: Optional[List[str]] = None,
-        # === FIX: çoklu alan ve fallback desteği
-        status_fields: Optional[List[str]] = None,
-        treat_txid_as_completed_when_status_missing: bool = False,
-    ):
-        self.name = name
-        self.api_fw     = FileWatcher(api_url_file,   normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
-        self.page_fw    = FileWatcher(page_url_file,  normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
-        self.cookie_fw  = FileWatcher(cookie_file,    normalize_fn=normalize_cookie_value)
-        self.payload_fw = FileWatcher(payload_file,   normalize_fn=lambda s: s)
-
-        self.api_url  = ""
-        self.page_url = ""
-        self.cookie   = ""
-        self.payload  = {}
-
-        st = load_json_or(state_file, {"seen_ids": [], "seeded": False})
-        self.seen_ids_file = state_file
-        self.seen_ids = set(str(x) for x in st.get("seen_ids", []))
-        self.seeded   = bool(st.get("seeded", False))
-        self.logged_out = False
-
-        self.list_keys = list_keys
-        self.header_emoji = header_emoji
-        self.header_title = header_title
-        self.make_message = wanted_fields_fn
-
-        self.cc_page_fw = cc_page_fw
-        self.cc_api_fw  = cc_api_fw
-        self.country_map = country_map
-
-        self.status_field = status_field
-
-        # === FIX: çoklu durum alanı desteği
-        self.status_fields: List[str] = []
-        if status_fields:
-            self.status_fields = [f for f in status_fields if f]
-        elif status_field:
-            self.status_fields = [status_field]
-
-        # === FIX: izinli durumları normalize ederek sakla
-        self.allowed_statuses: Optional[Set[str]] = (
-            {_normalize_status(s) for s in allowed_statuses} if allowed_statuses else None
-        )
-
-        # === FIX: durum alanı yoksa txid+coinTxUrl ile tamamlandı say
-        self.treat_txid_as_completed = bool(treat_txid_as_completed_when_status_missing)
-
-        self.session: Optional[aiohttp.ClientSession] = None
-        self.tg: Optional[Telegram] = None
-
-    def update_cookie_from_response(self, resp: aiohttp.ClientResponse) -> None:
-        """Merge Set-Cookie headers into current cookie and persist if changed."""
-        if resp is None:
-            return
-        try:
-            set_cookies = resp.headers.getall("Set-Cookie", [])
-        except AttributeError:
-            set_cookies = []
-        if not set_cookies:
-            return
-        cookies: Dict[str, str] = {}
-        if self.cookie:
-            for part in self.cookie.split(";"):
-                if "=" not in part:
-                    continue
-                k, v = part.split("=", 1)
-                cookies[k.strip()] = v.strip()
-        for sc in set_cookies:
-            first = sc.split(";", 1)[0]
-            if "=" not in first:
-                continue
-            k, v = first.split("=", 1)
-            cookies[k.strip()] = v.strip()
-        new_cookie = "; ".join(f"{k}={v}" for k, v in cookies.items())
-        if new_cookie != self.cookie:
-            self.cookie = new_cookie
-            try:
-                self.cookie_fw.path.write_text(new_cookie, encoding="utf-8")
-                self.cookie_fw.value = new_cookie
-                try:
-                    self.cookie_fw.mtime = self.cookie_fw.path.stat().st_mtime
-                except FileNotFoundError:
-                    pass
-            except Exception as e:
-                print(f"[Cookie][{self.name}] yazılamadı: {e}")
-
-    async def _get_html(self, url: str, origin: str, cookie: str, admin_token: Optional[str]) -> Tuple[int, str]:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Origin": origin,
-            "Cookie": cookie,
-            "Cache-Control": "no-cache",
-        }
-        if admin_token:
-            headers["Admin-Token"] = admin_token
-        try:
-            async with self.session.get(url, headers=headers) as r:
-                self.update_cookie_from_response(r)
-                txt = await r.text()
-                return r.status, txt[:2000]
-        except Exception as e:
-            return 0, f"[HTML hata] {e}"
-
-    async def _post_api(self, url: str, origin: str, page_url: str, cookie: str, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any] | str]:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Origin": origin,
-            "Referer": page_url,
-            "X-Requested-With": "XMLHttpRequest",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "Cookie": cookie,
-            "Admin-language": "en_US",
-        }
-        admin_token = cookie_get(cookie, "admin-token")
-        if admin_token:
-            headers["Admin-Token"] = admin_token
-        csrf = cookie_get(cookie, "csrfToken")
-        if csrf:
-            headers["X-CSRF-Token"] = csrf
-        token_swap = cookie_get(cookie, "admin-token-swap")
-        if token_swap:
-            headers["Admin-Token-Swap"] = token_swap
-
-        try:
-            async with self.session.post(url, json=payload, headers=headers) as r:
-                self.update_cookie_from_response(r)
-                txt = await r.text()
-                try:
-                    return r.status, json.loads(txt)
-                except json.JSONDecodeError:
-                    return r.status, txt[:2000]
-        except Exception as e:
-            return 0, f"[API hata] {e}"
-        
-    async def refresh_login(self, origin: str) -> bool:
-        """Attempt to login again using credentials from env or config."""
-        login_url, user, pwd = load_login_credentials()
-        if not login_url or not user or not pwd:
-            if self.tg:
-                await self.tg.send(f"⚠️ {self.name}: Login bilgileri eksik.")
-            return False
-        hdr_origin = parse_origin(login_url) or origin
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            "Origin": hdr_origin,
-            "Referer": hdr_origin,
-        }
-        payload = {"username": user, "password": pwd}
-        try:
-            async with self.session.post(login_url, json=payload, headers=headers) as r:
-                self.update_cookie_from_response(r)
-                await r.text()
-                if r.status == 200:
-                    self.logged_out = False
-                    if self.tg:
-                        await self.tg.send(f"ℹ️ {self.name}: Login yenilendi.")
-                    return True
-                else:
-                    if self.tg:
-                        await self.tg.send(f"⚠️ {self.name}: Login başarısız (HTTP {r.status}).")
-        except Exception as e:
-            if self.tg:
-                await self.tg.send(f"⚠️ {self.name}: Login hata: {e}")
-        return False
-
-    async def _fetch_country_code_for_uid(self, uid: str) -> Optional[str]:
-        if not uid:
-            return None
-        cc_page_base = self.cc_page_fw.value or ""
-        cc_api_url   = self.cc_api_fw.value or ""
-        if not cc_page_base or not cc_api_url:
-            return None
-        user_detail_url = build_user_detail_url(cc_page_base, uid)
-        if not user_detail_url:
-            return None
-        origin = parse_origin(cc_api_url) or parse_origin(user_detail_url)
-        if not origin:
-            return None
-        admin_token = cookie_get(self.cookie, "admin-token")
-        try:
-            _status_html, _ = await self._get_html(user_detail_url, origin, self.cookie, admin_token)
-        except Exception as e:
-            print(f"[CC][{self.name}] userDetail GET hata: {e}")
-        await asyncio.sleep(0.25)
-        payload = {"userId": uid}
-        status, body = await self._post_api(
-            url=cc_api_url,
-            origin=origin,
-            page_url=user_detail_url,
-            cookie=self.cookie,
-            payload=payload,
-        )
-        if isinstance(body, dict) and str(body.get("code")) == "0":
-            data = body.get("data") or {}
-            user = data.get("user") or {}
-            cc = user.get("countryCode") or data.get("countryCode") or user.get("mobileNumberCountryCode")
-            if cc not in (None, "", "null"):
-                return str(cc)
-        print(f"[CC][{self.name}] uid={uid} cc alınamadı; http={status}, body={str(body)[:300]}")
-        return None
-
-    def _find_list(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        for key in self.list_keys:
-            arr = data.get(key)
-            if isinstance(arr, list):
-                return arr
-        return []
-    
-    def _row_key(self, d: Dict[str, Any]) -> str | None:
-        """Kayıtları güvenle eşsizleştirmek için anahtar üret."""
-        # 1) txid + uid (yoksa addressTo) birleşimi
-        txid = str(d.get("txid") or "").strip()
-        uid  = str(d.get("uid") or "").strip()
-        addr = str(d.get("addressTo") or "").strip()
-        if txid and txid.lower() != "null":
-            return f"{txid}:{uid or addr}"
-        # 2) id'yi string olarak kullan (int'e çevirmeyin)
-        v = d.get("id")
-        if v not in (None, "", "null"):
-            s = str(v).strip()
-            if s:
-                return s
-        # 3) yedek: uid + createdAt
-        uid = str(d.get("uid", "") or "").strip()
-        try:
-            ms = int(d.get("createdAt") or 0)
+            dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         except Exception:
-            ms = 0
-        if uid or ms:
-            return f"{uid}:{ms}"
-        return None
+            return str(ms)
 
-        # === FIX: kayıttan durum metnini çıkar
-    def _status_text(self, d: Dict[str, Any]) -> Optional[str]:
-        # Önce kullanıcı tarafından verilen alanları dene
-        for f in self.status_fields:
-            val = d.get(f)
-            if val not in (None, "", "null"):
-                st = _normalize_status(val)
-                if st:
-                    return st
-        # Bilinen alternatifleri sırayla dene (API sürüm farkları için güvenlik ağı)
-        for f in ("statusDesc", "depositStatusDesc", "depositStatus", "status",
-          "stateDesc", "state", "orderStatusDesc", "orderStatus"):
-            if f in self.status_fields:
-                continue
-            val = d.get(f)
-            if val not in (None, "", "null"):
-                st = _normalize_status(val)
-                if st:
-                    return st
-        return None
+def build_telegram_message(deposit: Dict) -> str:
+    symbol = str(deposit.get("symbol", "-"))
+    amount = str(deposit.get("amount", "-"))
+    usdt_amount = str(deposit.get("usdtAmount", "-"))
+    uid = str(deposit.get("uid", "-"))
+    status_desc = str(deposit.get("statusDesc", "-"))
+    created_at = int(deposit.get("createdAt", 0) or 0)
+    when_str = epoch_ms_to_local_iso(created_at) if created_at else "-"
+    country_code = str(deposit.get("countryCode") or deposit.get("country_code") or deposit.get("country") or "-")
+    return "\n".join([
+        "🟢 Yeni Deposit",
+        "",
+        f"symbol: {symbol}",
+        f"amount: {amount}",
+        "",
+        f"usdtAmount: {usdt_amount}",
+        f"uid: {uid}",
+        f"statusDesc: {status_desc}",
+        f"time: {when_str}",
+        f"countryCode: {country_code}",
+    ])
 
-    # === FIX: bu satır bildirim kriterini sağlıyor mu?
-    def _is_allowed_row(self, d: Dict[str, Any]) -> bool:
-        if self.allowed_statuses is None:
-            return True
-        st = self._status_text(d)
-        if st is not None:
-            return st in self.allowed_statuses
-        # Durum yoksa fakat txid+coinTxUrl varsa tamamlandı kabul et (deposit için)
-        if self.treat_txid_as_completed:
-            txid = str(d.get("txid") or "").strip()
-            link = str(d.get("coinTxUrl") or "").strip()
-            if txid and link:
-                return True
+def send_telegram_message(bot_token: str, chat_id: str, text: str,
+                          thread_id: Optional[int] = None,
+                          disable_web_page_preview: bool = True) -> bool:
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": disable_web_page_preview}
+    if thread_id is not None:
+        payload["message_thread_id"] = int(thread_id)
+    try:
+        r = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        if r.status_code != 200:
+            logging.error(f"Telegram hata kodu: {r.status_code} - {r.text}")
+            return False
+        j = r.json()
+        if not j.get("ok", False):
+            logging.error(f"Telegram 'ok': False -> {j}")
+            return False
+        return True
+    except Exception as e:
+        logging.error(f"Telegram gönderim hatası: {e}")
         return False
 
-    async def _handle_rows(self, body: Dict[str, Any]) -> None:
-        data = body.get("data") or {}
-        items = self._find_list(data)
-        if not isinstance(items, list):
-            await self.tg.send(f"⚠️ {self.name}: Beklenen liste bulunamadı ({' / '.join(self.list_keys)}).")
-            return
+def bootstrap_state_with_current_list(state: Dict, deposits: List[Dict]) -> Dict:
+    if not deposits:
+        state["bootstrap_done"] = True; save_state(STATE_FILE, state); return state
+    try:
+        max_created = max(int(x.get("createdAt", 0) or 0) for x in deposits)
+    except Exception:
+        max_created = 0
+    initial_ids = []
+    for item in deposits[:1000]:
+        _id = item.get("id")
+        try:
+            initial_ids.append(int(_id))
+        except Exception:
+            initial_ids.append(str(_id))
+    deduped, seen = [], set()
+    for _id in initial_ids:
+        if _id in seen: continue
+        seen.add(_id); deduped.append(_id)
+    state["processed_ids"] = deduped[-5000:]
+    state["last_seen_created_at"] = max_created
+    state["bootstrap_done"] = True
+    save_state(STATE_FILE, state)
+    return state
 
-        # --- SEED mantığı (başlangıç) ---
-        if SEED_ON_START and not self.seeded:
-            now_ms = int(datetime.now().timestamp() * 1000)
-            cutoff_ms = now_ms - 2 * 60 * 1000  # son 2 dakika seed edilmez
-            seeded_n = 0
-            skip_new_n = 0
-            for d in items:
-                key = self._row_key(d)
-                if not key:
-                    continue
-                # === FIX: normalize ve çoklu alanla filtrele
-                if not self._is_allowed_row(d):
-                    continue
-                try:
-                    created = int(d.get("createdAt") or 0)
-                except Exception:
-                    created = 0
-                if created and created > cutoff_ms:
-                    # bunlar 'yeni' sayılacak ve bildirim gitsin
-                    skip_new_n += 1
-                    continue
-                self.seen_ids.add(key)
-                seeded_n += 1
-            self.seeded = True
-            save_json(self.seen_ids_file, {"seen_ids": sorted(self.seen_ids), "seeded": True})
-            await self.tg.send(
-                f"ℹ️ {self.name}: İlk yükleme — {seeded_n} eski kayıt seedlendi; "
-                f"son 2 dk içindeki {skip_new_n} kayıt bildirilecek."
-            )
-            return
+def detect_new_deposits(state: Dict, deposits: List[Dict]) -> List[Dict]:
+    last_seen_created = int(state.get("last_seen_created_at", 0) or 0)
+    processed_ids = set(state.get("processed_ids", []))
+    candidates: List[Dict] = []
+    for item in deposits:
+        _id = item.get("id")
+        created_at = int(item.get("CreatedAt", item.get("createdAt", 0)) or 0)  # CreatedAt guard
+        try:
+            normalized_id = int(_id)
+        except Exception:
+            normalized_id = str(_id)
+        is_new_by_id = normalized_id not in processed_ids
+        is_new_by_time = created_at > last_seen_created
+        if is_new_by_id or is_new_by_time:
+            candidates.append(item)
+    candidates.sort(key=lambda x: int(x.get("createdAt", 0) or 0))
+    return candidates
 
-        # --- Yeni kayıt tespiti (txid/id/uid:createdAt ile) ---
-        new_items = []
-        skipped_bad_key = 0
-        for d in items:
-            key = self._row_key(d)
-            if not key:
-                skipped_bad_key += 1
-                continue
-            # === FIX: normalize ve çoklu alanla filtrele
-            if not self._is_allowed_row(d):
-                continue
-            if key not in self.seen_ids:
-                new_items.append(d)
-                self.seen_ids.add(key)
+def update_state_after_send(state: Dict, sent_items: List[Dict]) -> Dict:
+    if not sent_items: return state
+    processed_ids = state.get("processed_ids", [])
+    last_seen_created = int(state.get("last_seen_created_at", 0) or 0)
+    for item in sent_items:
+        _id = item.get("id")
+        created_at = int(item.get("createdAt", 0) or 0)
+        try:
+            normalized_id = int(_id)
+        except Exception:
+            normalized_id = str(_id)
+        processed_ids.append(normalized_id)
+        if created_at > last_seen_created:
+            last_seen_created = created_at
+    if len(processed_ids) > 6000:
+        processed_ids = processed_ids[-5000:]
+    state["processed_ids"] = processed_ids
+    state["last_seen_created_at"] = last_seen_created
+    save_state(STATE_FILE, state)
+    return state
 
-        if skipped_bad_key:
-            print(f"[{self.name}] {skipped_bad_key} kayıt, anahtar üretilemediği için atlandı.")
+def handle_signals():
+    def _handler(signum, frame):
+        logging.info(f"Sinyal alındı ({signum}). Bot durduruluyor...")
+        stop_event.set()
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
 
-        if not new_items:
-            return
+def _compose_cookie_header_from_items(items: List[Tuple[str, str]]) -> str:
+    """
+    Önemli anahtarları öne alarak deterministik 'Cookie' header’ı üret.
+    """
+    # Önceliklendirilmiş anahtarlar
+    priority = [
+        "JSESSIONID",
+        "admin-token",
+        "admin-broker-id-co",
+        "csrfToken",
+        "lan",
+        "servicelanguage",
+        "admin-language",
+        "admin-source",
+        "swap-broker-Id",
+        "other_lan",
+        "info",
+        "isShowDownLoadDialogEntrustedQuery",
+        "isShowDownLoadDialogAssetsQuery",
+    ]
+    # map
+    d: Dict[str, str] = {}
+    for k, v in items:
+        if not k or v is None: continue
+        d[k] = v
+    # sırala
+    ordered: List[str] = []
+    seen = set()
+    for k in priority:
+        if k in d and k not in seen:
+            ordered.append(f"{k}={d[k]}")
+            seen.add(k)
+    for k, v in d.items():
+        if k in seen: continue
+        ordered.append(f"{k}={v}")
+        seen.add(k)
+    return "; ".join(ordered)
 
-        # Zaman sırasına diz
-        new_items.sort(key=lambda x: x.get("createdAt", 0))
+def _read_cookies_from_browser(domain_filter: str, source: str) -> Optional[str]:
+    """
+    browser-cookie3 ile tarayıcıdan cookie oku, hedef domain için header’a çevir.
+    source: edge|chrome|firefox|brave|opera
+    """
+    try:
+        import browser_cookie3 as bc3
+    except Exception as e:
+        logging.error("browser-cookie3 yok veya import edilemedi. 'pip install browser-cookie3' kurun.")
+        return None
 
-        # Bildirimleri gönder
-        for d in new_items:
-            uid = str(d.get("uid", "") or "")
-            cc = "—"
-            if uid:
-                try:
-                    cc = await asyncio.wait_for(self._fetch_country_code_for_uid(uid), timeout=CC_TIMEOUT_SEC)
-                    if cc is None or cc == "" or str(cc).lower() == "null":
-                        cc = "—"
-                except asyncio.TimeoutError:
-                    print(f"[CC][{self.name}] uid={uid} timeout ({CC_TIMEOUT_SEC}s). Mesaj cc'siz gönderilecek.")
-                    cc = "—"
-                except Exception as e:
-                    print(f"[CC][{self.name}] uid={uid} hata: {e}")
-                    cc = "—"
-
-            # Ülke isimleri (xlsx/csv)
-            self.country_map.reload_if_changed()
-            country_names = self.country_map.countries_for_cc(cc if cc != "—" else None)
-            country_line = f"Country: {country_names if country_names else '—'}"
-
-            msg = self.make_message(d, self.header_emoji, self.header_title)
-            parts = msg.splitlines()
-            if parts:
-                parts.insert(1, country_line)
-                msg = "\n".join(parts)
-            else:
-                msg = f"{country_line}\n{msg}"
-            msg = f"{msg}\ncountryCode: {cc}"
-            await self.tg.send(msg)
-
-        # State'i küçült ve kaydet
-        if len(self.seen_ids) > 5000:
-            self.seen_ids = set(list(self.seen_ids)[-3000:])
-        save_json(self.seen_ids_file, {"seen_ids": sorted(self.seen_ids), "seeded": self.seeded})
-
-
-    async def run(self, session: aiohttp.ClientSession, tg: Telegram):
-        self.session = session
-        self.tg = tg
-
-        for fw in (self.api_fw, self.page_fw, self.cookie_fw, self.payload_fw, self.cc_page_fw, self.cc_api_fw):
-            fw.load_if_changed()
-
-        if self.payload_fw.value:
-            try:
-                self.payload = json.loads(self.payload_fw.value)
-            except Exception:
-                self.payload = {}
-                await self.tg.send(f"⚠️ {self.name}: payload JSON değil, boş gövde ile devam.")
+    try:
+        if source == "edge":
+            cj = bc3.edge()
+        elif source == "chrome":
+            cj = bc3.chrome()
+        elif source == "firefox":
+            cj = bc3.firefox()
+        elif source == "brave":
+            cj = bc3.brave()
+        elif source == "opera":
+            cj = bc3.opera()
         else:
-            self.payload = {}
+            logging.error(f"Geçersiz --auto-cookie kaynağı: {source}")
+            return None
+    except Exception as e:
+        logging.error(f"Tarayıcı cookie okunamadı ({source}): {e}")
+        return None
 
-        self.api_url  = self.api_fw.value or ""
-        self.page_url = self.page_fw.value or ""
-        self.cookie   = self.cookie_fw.value or ""
+    # Hedef domain’i filtrele
+    pairs: List[Tuple[str, str]] = []
+    for c in cj:
+        dom = (c.domain or "").lstrip(".")
+        if domain_filter in dom:
+            pairs.append((c.name, c.value))
 
-        def info(p: Path) -> str:
-            return f"{p}  (exists={p.exists()} size={p.stat().st_size if p.exists() else 0})"
-        await self.tg.send(
-            f"📂 {self.name} dosyaları:\n"
-            f"- api: {info(self.api_fw.path)}\n"
-            f"- page: {info(self.page_fw.path)}\n"
-            f"- cookie: {info(self.cookie_fw.path)}\n"
-            f"- payload: {info(self.payload_fw.path)}\n"
-            f"- cc_page: {info(self.cc_page_fw.path)}\n"
-            f"- cc_api: {info(self.cc_api_fw.path)}\n"
-            f"- country_map.csv: {info(COUNTRY_MAP_CSV)}\n"
-            f"- country_map.xlsx: {info(COUNTRY_MAP_XLSX)}"
-        )
+    if not pairs:
+        logging.warning(f"Tarayıcıdan {domain_filter} için cookie bulunamadı.")
+        return None
 
-        while True:
-            for name, fw in (("API URL", self.api_fw), ("PAGE URL", self.page_fw),
-                             ("COOKIE", self.cookie_fw), ("PAYLOAD", self.payload_fw),
-                             ("CC PAGE", self.cc_page_fw), ("CC API", self.cc_api_fw)):
-                changed, val = fw.load_if_changed()
-                if changed:
-                    if name == "API URL":
-                        self.api_url = val or ""
-                    elif name == "PAGE URL":
-                        self.page_url = val or ""
-                    elif name == "COOKIE":
-                        self.cookie = val or ""
-                    elif name == "PAYLOAD":
-                        try:
-                            self.payload = json.loads(val) if val else {}
-                        except Exception:
-                            self.payload = {}
-                            await self.tg.send(f"⚠️ {self.name}: payload JSON değil; boş gövde ile devam.")
-                    await self.tg.send(f"ℹ️ {self.name}: {name} güncellendi.")
+    # Header string üret
+    return _compose_cookie_header_from_items(pairs)
 
-            if not self.api_url or not self.page_url or not self.cookie:
-                await asyncio.sleep(POLL_SECONDS)
-                continue
+def write_cookies_txt_if_changed(cookie_path: str, new_cookie_header: str) -> bool:
+    """
+    cookies.txt içeriği değiştiyse yazar ve True döner; değilse False.
+    (TEK SATIR yazım garanti)
+    """
+    old = ""
+    if os.path.exists(cookie_path):
+        try:
+            with open(cookie_path, "r", encoding="utf-8") as f:
+                old = f.read().strip()
+            if old.lower().startswith("cookie:"):
+                old = old[len("cookie:"):].strip()
+            old = old.replace("; ", ";").strip().strip(";")
+        except Exception:
+            old = ""
+    # normalize new
+    new_norm = new_cookie_header.replace("; ", ";").strip().strip(";")
+    if old == new_norm:
+        return False
+    # yaz
+    with open(cookie_path, "w", encoding="utf-8") as f:
+        f.write(new_norm)
+    return True
 
-            origin = parse_origin(self.api_url or self.page_url)
+def reload_cookies_and_session(cookie_path: str) -> requests.Session:
+    """
+    cookies.txt → cookie_dict + raw header → session + header’lar
+    """
+    global cookie_file_mtime, raw_cookie_header
+    cookie_dict, raw = load_cookies_from_file(cookie_path)
+    raw_cookie_header = raw
+    cookie_file_mtime = os.path.getmtime(cookie_path)
+    sess = build_session(cookie_dict)
+    logging.info("Cookie yeniden yüklendi ve session tazelendi.")
+    return sess
 
-            admin_token = cookie_get(self.cookie, "admin-token")
-            h_status, _ = await self._get_html(self.page_url, origin, self.cookie, admin_token)
-            print(f"[HTML][{self.name}] {self.page_url} -> {h_status}")
+def maybe_refresh_cookie_from_browser(cookie_path: str, bot_token: str, chat_id: str, thread_id: Optional[int]) -> Optional[requests.Session]:
+    """
+    --auto-cookie açık ise tarayıcıdan oku; değiştiyse txt’yi yaz, session’ı yenile,
+    Telegram’a “Cookie otomatik güncellendi (tarayıcı)” bildirimi yolla. Yeni session döndürür.
+    """
+    global auto_cookie_source
+    if not auto_cookie_source:
+        return None
+    new_header = _read_cookies_from_browser(TARGET_COOKIE_DOMAIN, auto_cookie_source)
+    if not new_header:
+        return None
+    changed = write_cookies_txt_if_changed(cookie_path, new_header)
+    if not changed:
+        return None
+    # Güncellendi — session’ı tazele, Telegram’a haber ver (OTOMATIK)
+    sess = reload_cookies_and_session(cookie_path)
+    send_telegram_message(bot_token, chat_id, "🔑 Cookie otomatik güncellendi (tarayıcı).", thread_id)
+    logging.info("Cookie tarayıcıdan çekildi ve cookies.txt güncellendi (OTOMATIK).")
+    return sess
 
-            a_status, a_body = await self._post_api(self.api_url, origin, self.page_url, self.cookie, self.payload)
-            print(f"[API ][{self.name}] {self.api_url} -> {a_status}")
+def main():
+    setup_logging()
+    parser = argparse.ArgumentParser(description="ChainUp Deposit Watcher (auto-cookie destekli)")
+    parser.add_argument("--cookie-file", default="cookies.txt", help="Cookie dosyası (tek satır, Request Headers → Cookie)")
+    parser.add_argument("--token", default=DEFAULT_TELEGRAM_BOT_TOKEN, help="Telegram bot token")
+    parser.add_argument("--chat-id", default=DEFAULT_TELEGRAM_CHAT_ID, help="Telegram chat id")
+    parser.add_argument("--thread-id", default=DEFAULT_TELEGRAM_THREAD_ID, type=int, nargs="?", help="Opsiyonel Telegram topic/thread id")
+    parser.add_argument("--interval", default=POLL_INTERVAL_SECONDS, type=int, help="Sorgu aralığı saniye")
+    parser.add_argument("--auto-cookie", choices=["edge","chrome","firefox","brave","opera"], help="Tarayıcıdan cookie otomatik çek")
+    args = parser.parse_args()
 
-            if isinstance(a_body, dict):
-                code = str(a_body.get("code"))
-                if code == "0":
-                    if self.logged_out:
-                        await self.tg.send(f"✅ {self.name}: Oturum geri geldi (code 0).")
-                        self.logged_out = False
-                    await self._handle_rows(a_body)
-                elif code == "10004":
-                    if not self.logged_out:
-                        await self.tg.send(f"🔴 {self.name}: User is not logged in (10004). Cookie/URL/headers expired.")
-                        self.logged_out = True
-                    await self.refresh_login(origin)
-                else:
-                    await self.tg.send(f"⚠️ {self.name}: API code={code}, msg={a_body.get('msg')}")
+    bot_token = args.token
+    chat_id = args.chat_id
+    thread_id = args.thread_id
+    interval = max(10, int(args.interval))
+    global auto_cookie_source
+    auto_cookie_source = args.auto_cookie
+
+    # Eğer --auto-cookie verildiyse önce tarayıcıdan okumayı dene ve dosyaya yaz
+    if auto_cookie_source:
+        logging.info(f"--auto-cookie aktif ({auto_cookie_source}). Tarayıcıdan cookie çekilecek.")
+        try:
+            header_from_browser = _read_cookies_from_browser(TARGET_COOKIE_DOMAIN, auto_cookie_source)
+            if header_from_browser:
+                if write_cookies_txt_if_changed(args.cookie_file, header_from_browser):
+                    logging.info("İlk başlatmada cookie tarayıcıdan yazıldı (cookies.txt).")
+                    # İlk başlatmada yapılan bu yazım OTOMATIK olduğundan mesaj gönderelim:
+                    # Not: reload birazdan zaten yapılacak, ama mesajı burada da atıyoruz.
+                    send_telegram_message(bot_token, chat_id, "🔑 Cookie otomatik güncellendi (tarayıcı).", thread_id)
+        except Exception as e:
+            logging.warning(f"İlk tarayıcı cookie yazımı başarısız: {e}")
+
+    # İlk cookie yükle
+    try:
+        sess = reload_cookies_and_session(args.cookie_file)
+    except Exception as e:
+        logging.error(f"Cookie yüklenemedi: {e}")
+        sys.exit(1)
+
+    handle_signals()
+
+    def on_exit():
+        try:
+            logging.info("Bot durduruluyor (exit).")
+            send_telegram_message(bot_token, chat_id, "⛔ Bot durduruldu", thread_id)
+        except Exception:
+            pass
+    atexit.register(on_exit)
+
+    logging.info("Bot başlatıldı. Depositleri izlemeye başladı.")
+    send_telegram_message(bot_token, chat_id, "✅ Bot başlatıldı", thread_id)
+
+    state = load_state(STATE_FILE)
+
+    # İlk bootstrap ve keepalive
+    try:
+        try_keepalive(sess)
+        # Oturumun doğru olduğundan emin olmak için (auto-cookie varsa) bir kez daha tarayıcıdan güncelleme dene
+        refreshed = maybe_refresh_cookie_from_browser(args.cookie_file, bot_token, chat_id, thread_id)
+        if refreshed is not None:
+            sess = refreshed
+        initial_list = fetch_deposits(sess)
+        logging.info(f"İlk listede {len(initial_list)} kayıt bulundu.")
+        if not state.get("bootstrap_done", False):
+            state = bootstrap_state_with_current_list(state, initial_list)
+            logging.info("Bootstrap tamamlandı; yeni kayıtlar bildirilecek.")
+    except PermissionError as e:
+        logging.error(f"401 (oturum) - cookie güncel değil: {e}")
+        sys.exit(2)
+    except ValueError as e:
+        logging.error(f"İlk fetch hata: {e} (muhtemelen code=10004 / oturum reddi)")
+    except Exception as e:
+        logging.error(f"İlk fetch sırasında beklenmeyen hata: {e}")
+
+    while not stop_event.is_set():
+        loop_start = time.time()
+
+        # --auto-cookie: tarayıcıdan cookie tazele (her turda dener, değişmişse uygular)
+        try:
+            refreshed = maybe_refresh_cookie_from_browser(args.cookie_file, bot_token, chat_id, thread_id)
+            if refreshed is not None:
+                sess = refreshed
+        except Exception as e:
+            logging.debug(f"Tarayıcıdan cookie tazeleme hatası: {e}")
+
+        # cookies.txt manuel değiştiyse yeniden yükle (ör. sen elle değiştirdin)
+        try:
+            current_mtime = os.path.getmtime(args.cookie_file)
+            if cookie_file_mtime is None or current_mtime != cookie_file_mtime:
+                # Buraya gelmişsek dosya M-TIME değişti (MANUEL güncelleme varsayımı).
+                logging.info("Cookie dosyasında değişiklik algılandı (MANUEL).")
+                sess = reload_cookies_and_session(args.cookie_file)
+                # MANUEL uyarı mesajı:
+                send_telegram_message(bot_token, chat_id, "📝 Cookie manuel güncellendi (dosya).", thread_id)
+        except Exception as e:
+            logging.debug(f"Cookie mtime kontrol hatası: {e}")
+
+        try_keepalive(sess)
+
+        new_items_sent: List[Dict] = []
+        try:
+            deposit_list = fetch_deposits(sess)
+            candidates = detect_new_deposits(state, deposit_list)
+            if candidates:
+                for item in candidates:
+                    text = build_telegram_message(item)
+                    ok = send_telegram_message(bot_token, chat_id, text, thread_id)
+                    if ok:
+                        logging.info(f"Telegram'a gönderildi | id={item.get('id')} createdAt={item.get('createdAt')}")
+                        new_items_sent.append(item)
+                    else:
+                        logging.error(f"Telegram gönderimi başarısız | id={item.get('id')}")
+                if new_items_sent:
+                    state = update_state_after_send(state, new_items_sent)
             else:
-                low = str(a_body).lower()
-                if not self.logged_out and (a_status in (401,403) or "not logged in" in low):
-                    await self.tg.send(f"🔴 {self.name}: Oturum geçersiz (HTTP {a_status}). Cookie/URL güncelleyin.")
-                    self.logged_out = True
-                    await self.refresh_login(origin)
+                logging.info("Yeni deposit yok.")
+        except PermissionError as e:
+            logging.warning(f"401 alındı, cookie yeniden okunacak: {e}")
+            try:
+                # Önce tarayıcıdan çekmeye çalış, olmazsa dosyadan yükle
+                refreshed = maybe_refresh_cookie_from_browser(args.cookie_file, bot_token, chat_id, thread_id)
+                if refreshed is not None:
+                    sess = refreshed
+                else:
+                    sess = reload_cookies_and_session(args.cookie_file)
+            except Exception as e2:
+                logging.error(f"Cookie yeniden yüklenemedi: {e2}")
+        except ValueError as e:
+            # Örn. code=10004 user not logged in
+            msg = str(e)
+            if "10004" in msg or "not logged in" in msg.lower():
+                logging.warning("API '10004 / not logged in' tespit edildi. Cookie tazeleniyor...")
+                try:
+                    refreshed = maybe_refresh_cookie_from_browser(args.cookie_file, bot_token, chat_id, thread_id)
+                    if refreshed is not None:
+                        sess = refreshed
+                    else:
+                        sess = reload_cookies_and_session(args.cookie_file)
+                except Exception as e2:
+                    logging.error(f"Cookie yeniden yüklenemedi: {e2}")
+            else:
+                logging.error(f"Deposit sorgusunda hata: {e}")
+        except Exception as e:
+            logging.error(f"Deposit sorgusunda beklenmeyen hata: {e}")
 
-            await asyncio.sleep(POLL_SECONDS)
+        # Bekleme (dilimli; stop_event erken çıkabilir)
+        elapsed = time.time() - loop_start
+        sleep_s = max(1.0, interval - elapsed)
+        slept = 0.0
+        while slept < sleep_s and not stop_event.is_set():
+            chunk = min(1.0, sleep_s - slept)
+            time.sleep(chunk)
+            slept += chunk
 
-# ----- Deposit mesajı -----
-def make_deposit_message(d: Dict[str, Any], emoji: str, title: str) -> str:
-    try:
-        ms = int(d.get("createdAt", 0))
-    except Exception:
-        ms = 0
-    dt = datetime.fromtimestamp(ms/1000) if ms else datetime.now()
-    tstr = fmt_tr(dt)
-
-    symbol = str(d.get("symbol", ""))
-    usdt_amount = str(d.get("usdtAmount", ""))
-    uid = str(d.get("uid", ""))
-    amount = str(d.get("amount", ""))
-    status_desc = str(
-        d.get("statusDesc")
-        or d.get("depositStatusDesc")
-        or d.get("depositStatus")
-        or d.get("status")
-        or d.get("walletStatus")  # sadece gösterim, filtrede kullanılmıyor
-        or ""
-    )
-    txid = str(d.get("txid", ""))
-
-    lines = [
-        f"{emoji} {title}",
-        f"SYMBOL: {symbol}",
-        f"USDTAMOUNT: {usdt_amount}",
-        f"UID: {uid}",
-        f"AMOUNT: {amount}",
-        f"STATUSDESC: {status_desc}",
-        f"TIME: {tstr}",
-    ]
-    coin_tx_url = str(d.get("coinTxUrl", "") or "")
-    if coin_tx_url and txid:
-        lines.append(f"txLink: {coin_tx_url}{txid}")
-    return "\n".join(lines)
-
-# ----- Withdraw mesajı -----
-def make_withdraw_message(d: Dict[str, Any], emoji: str, title: str) -> str:
-    try:
-        ms = int(d.get("createdAt", 0))
-    except Exception:
-        ms = 0
-    dt = datetime.fromtimestamp(ms/1000) if ms else datetime.now()
-    tstr = fmt_tr(dt)
-
-    symbol = str(d.get("symbol", ""))
-    usdt_amount = str(d.get("usdtAmount", ""))
-    uid = str(d.get("uid", ""))
-    amount = str(d.get("amount", ""))
-    status_desc = str(d.get("statusDesc", ""))
-    txid = str(d.get("txid", ""))
-
-    lines = [
-        f"{emoji} {title}",
-        f"SYMBOL: {symbol}",
-        f"USDTAMOUNT: {usdt_amount}",
-        f"UID: {uid}",
-        f"AMOUNT: {amount}",
-        f"STATUSDESC: {status_desc}",
-        f"TIME: {tstr}",
-    ]
-    coin_tx_url = str(d.get("coinTxUrl", "") or "")
-    if coin_tx_url and txid:
-        lines.append(f"txLink: {coin_tx_url}{txid}")
-    return "\n".join(lines)
-
-async def main():
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
-        tg = Telegram(session, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-        await tg.send("🚀 Watcher’lar başlıyor (deposit + withdraw).")
-
-        cc_page_fw = FileWatcher(CC_PAGE_URL_FILE, normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
-        cc_api_fw  = FileWatcher(CC_API_URL_FILE,  normalize_fn=lambda s: s.splitlines()[0].strip() if s else "")
-
-        country_map = CountryMap(COUNTRY_MAP_CSV, COUNTRY_MAP_XLSX)
-        country_map.reload_if_changed()
-
-        deposit = BaseWatcher(
-            name="Deposit",
-            api_url_file=DEPOSIT_API_URL_FILE,
-            page_url_file=DEPOSIT_PAGE_URL_FILE,
-            cookie_file=DEPOSIT_COOKIE_FILE,
-            payload_file=DEPOSIT_PAYLOAD_FILE,
-            state_file=DEPOSIT_STATE_FILE,
-            list_keys=["depositCryptoMapList", "depositList"],
-            header_emoji="🟢",
-            header_title="Yeni Deposit",
-            wanted_fields_fn=make_deposit_message,
-            cc_page_fw=cc_page_fw,
-            cc_api_fw=cc_api_fw,
-            country_map=country_map,
-
-            # === FIX: birden fazla alan adı dene + eşanlamlılar
-            status_fields=["statusDesc", "depositStatusDesc", "depositStatus", "status"],
-            allowed_statuses=["completed", "success", "successful", "succeeded", "confirmed"],
-            treat_txid_as_completed_when_status_missing=True,
-            )
-
-
-        withdraw = BaseWatcher(
-            name="Withdraw",
-            api_url_file=WITHDRAW_API_URL_FILE,
-            page_url_file=WITHDRAW_PAGE_URL_FILE,
-            cookie_file=DEPOSIT_COOKIE_FILE,
-            payload_file=WITHDRAW_PAYLOAD_FILE,
-            state_file=WITHDRAW_STATE_FILE,
-            list_keys=["withdrawCryptoMapList", "withdrawList"],
-            header_emoji="🔴",
-            header_title="Yeni Withdraw",
-            wanted_fields_fn=make_withdraw_message,
-            cc_page_fw=cc_page_fw,
-            cc_api_fw=cc_api_fw,
-            country_map=country_map,
-
-            # withdraw tarafında tek alan yeterli
-            status_fields=["statusDesc"],
-            allowed_statuses=["completed"],
-        )
-
-
-        await asyncio.gather(
-                deposit.run(session, tg),
-                withdraw.run(session, tg),
-            )
+    logging.info("Bot durduruldu.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
