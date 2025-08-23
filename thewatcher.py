@@ -10,6 +10,7 @@ import signal
 import sys
 import threading
 import time
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -645,13 +646,33 @@ def fetch_user_info(sess: requests.Session, uid: int) -> Dict[str, Optional[str]
             user = inner.get("user") or {}
             cc = user.get("countryCode")  # örn '+360+62'
             ip = inner.get("ip") or ""
-            return {"countryCode": cc, "ip": ip}
+            if cc:
+                return {"countryCode": cc, "ip": ip}
         except Exception as e:
             last_error = e
             continue
 
+    # Fallback: userDetail sayfasını GET ile çekip regex ile ara
+    try:
+        url = f"{DEFAULT_BASE_URL}/userDetail?id={uid}"
+        r = sess.get(url, headers={"Cookie": raw_cookie_header}, timeout=REQUEST_TIMEOUT)
+        if r.status_code == 401:
+            raise PermissionError("401 Unauthorized (userDetail).")
+        r.raise_for_status()
+        match_cc = re.search(r'"countryCode":"([^"\\]+)"', r.text)
+        match_ip = re.search(r'"ip":"([^"\\]+)"', r.text)
+        if match_cc:
+            cc = match_cc.group(1)
+            ip = match_ip.group(1) if match_ip else None
+            return {"countryCode": cc, "ip": ip}
+    except Exception as e:
+        last_error = e
+
+
     if last_error:
         logging.warning(f"get_user_info hatası (uid={uid}): {last_error}")
+    else:
+        logging.warning(f"get_user_info sonuçsuz (uid={uid})")
     return {"countryCode": None, "ip": None}
 
 
