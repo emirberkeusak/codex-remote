@@ -1,0 +1,14 @@
+# Büyük dosyaları ve build klasörlerini hariç tut
+*.exe
+*.pkg
+*.zip
+*.log
+*.txt
+*.msi
+*.7z
+*.rar
+
+# Derleme klasörleri
+build/
+dist/
+__pycache__/
